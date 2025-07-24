@@ -157,7 +157,7 @@ class BiasBlock(torch.nn.Module):
         self.edge_lin = nn.Parameter(torch.randn(num_nodes, out_channels))
         self.edge_lin2 = SynthesisLayer(out_channels, out_channels, w_dim=w_dim)
         self.linear = SynthesisLayer(in_channels, out_channels, w_dim=w_dim)
-        self.edge_scale = nn.Parameter(torch.full(out_channels, edge_scale_init))
+        self.edge_scale = nn.Parameter(torch.full((out_channels,), edge_scale_init))
 
     def forward(self, x: OptTensor, edge_index: Adj, w) -> Tensor:
         x = self.linear(x, w)
@@ -168,25 +168,24 @@ class BiasBlock(torch.nn.Module):
         return out + x
 
 
-@persistence.persistent_class
 class GNNConv(gnn.MessagePassing):
     def __init__(
         self,
-        channels_in: int,
-        channels_out: int,
+        in_channels: int,
+        out_channels: int,
         w_dim: int,
         edge_scale_init: float = 0.01,
         **kwargs,
     ):
         kwargs.setdefault("aggr", "add")
         super().__init__(**kwargs)
-        self.channels_in = channels_in
-        self.channels_out = channels_out
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         self.edge_scale_init = edge_scale_init
 
-        self.lin_in = SynthesisLayer(channels_in, channels_out, w_dim=w_dim)
-        self.lin_edge = SynthesisLayer(channels_out, channels_out, w_dim=w_dim)
-        self.edge_scale = nn.Parameter(torch.full((channels_out,), edge_scale_init))
+        self.lin_in = SynthesisLayer(in_channels, out_channels, w_dim=w_dim)
+        self.lin_edge = SynthesisLayer(out_channels, out_channels, w_dim=w_dim)
+        self.edge_scale = nn.Parameter(torch.full((out_channels,), edge_scale_init))
 
     def forward(self, x: Tensor, edge_index: Adj, w) -> Tensor:
         x = self.lin_in(x, w)
