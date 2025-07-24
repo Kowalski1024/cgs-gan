@@ -317,6 +317,8 @@ class PointGenerator(nn.Module):
                 x = self.position_gnn[i](x, edge_index, w_i)
             x_pos = x
 
+            x = self.linear(x)  # [B, L, 256]
+
             for i in range(self.bias_num_blocks):
                 x = self.feature_gnn[i](x, edge_index, w_i)
             x_feat = x
