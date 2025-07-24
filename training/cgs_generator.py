@@ -12,6 +12,7 @@ import torch
 from camera_utils import focal2fov
 from torch_utils import persistence
 from training.gaussian3d_splatting.custom_cam import CustomCam
+from training.gaussian3d_splatting.camera import extract_cameras
 from training.networks_stylegan2 import MappingNetwork
 from training.gaussian3d_splatting.renderer import Renderer
 
@@ -53,6 +54,8 @@ class CGSGenerator(torch.nn.Module):
         cam2world_matrix = c[:, :16].view(-1, 4, 4)
         intrinsics = c[:, 16:25].view(-1, 3, 3)
 
+        cameras = extract_cameras(cam2world_matrix, intrinsics, 128)
+
         if resolution is None:
             resolution = self.resolution
         else:
@@ -84,7 +87,7 @@ class CGSGenerator(torch.nn.Module):
             if render_output:
                 fovx = focal2fov(focalx[batch_idx])
                 fovy = focal2fov(focaly[batch_idx])
-                cur_cam = CustomCam(resolution, resolution, fovy=fovy, fovx=fovx, extr=cam2world_matrix[batch_idx])
+                cur_cam = cameras[batch_idx]
                 bg = torch.ones(3, device=ws.device)
                 ret_dict = self.renderer_gaussian3d.render(gaussian_params_i, cur_cam, bg=bg)
                 rendered_images.append(ret_dict["image"].unsqueeze(0))
