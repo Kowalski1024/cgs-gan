@@ -287,11 +287,11 @@ class PointGenerator(nn.Module):
             opacity=self.opacity_init,
         )
 
-        xyz = torch.empty((B, self.num_pts, 3), device=self.device)
-        scale = torch.empty((B, self.num_pts, 3), device=self.device)
-        rotation = torch.empty((B, self.num_pts, 4), device=self.device)
-        opacity = torch.empty((B, self.num_pts, 1), device=self.device)
-        color = torch.empty((B, self.num_pts, 3), device=self.device)
+        xyz = torch.empty((B, self.num_pts, 3), device=ws.device)
+        scale = torch.empty((B, self.num_pts, 3), device=ws.device)
+        rotation = torch.empty((B, self.num_pts, 4), device=ws.device)
+        opacity = torch.empty((B, self.num_pts, 1), device=ws.device)
+        color = torch.empty((B, self.num_pts, 3), device=ws.device)
 
         for i, w_i in enumerate(ws):
             for i in range(self.gnn_num_blocks):
