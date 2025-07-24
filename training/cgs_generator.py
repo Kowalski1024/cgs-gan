@@ -95,7 +95,7 @@ class CGSGenerator(torch.nn.Module):
         edge_index = SparseTensor.from_edge_index(edge_index)
         encoded_pos = self.encoder(pos)
 
-        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(encoded_pos, ws)
+        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(encoded_pos, edge_index, ws)
         dec_out = {}
         dec_out["sample_coordinates"] = sample_coordinates
         dec_out["scale"] = sample_scale

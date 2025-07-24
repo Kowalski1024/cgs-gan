@@ -299,7 +299,7 @@ class PointGenerator(nn.Module):
 
         self.xyz_output_scale = options["xyz_output_scale"]  # default: 0.1
 
-    def forward(self, x, ws):
+    def forward(self, x, edge_index, ws):
         B = ws.shape[0]
 
         prev_anchors = EasyDict(
@@ -314,11 +314,11 @@ class PointGenerator(nn.Module):
 
         for i, w_i in enumerate(ws):
             for i in range(self.gnn_num_blocks):
-                x = self.position_gnn[i](x, None, w_i)
+                x = self.position_gnn[i](x, edge_index, w_i)
             x_pos = x
 
             for i in range(self.bias_num_blocks):
-                x = self.feature_gnn[i](x, None, w_i)
+                x = self.feature_gnn[i](x, edge_index, w_i)
             x_feat = x
 
             out = EasyDict(
