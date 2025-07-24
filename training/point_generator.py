@@ -4,8 +4,8 @@ import numpy as np
 
 from dnnlib import EasyDict
 from training.networks_stylegan2 import FullyConnectedLayer
-from training.transformer_inter import Transformer, MLP, AdaptiveNorm
 from torch_utils import persistence
+from training.gnn_inter import GNNConv, BiasBlock
 
 
 @persistence.persistent_class
@@ -205,6 +205,13 @@ class GaussianScene:
         self.opacity = torch.empty((batch_size, 0, 1), device=device)
         self.color = torch.empty((batch_size, 0, 3), device=device)
 
+    def put(self, idx, xyz, scale, rotation, color, opacity):
+        self.xyz[idx] = xyz
+        self.scale[idx] = scale
+        self.rotation[idx] = rotation
+        self.color[idx] = color
+        self.opacity[idx] = opacity
+
     def concat(self, new_scene):
         self.xyz = torch.cat([self.xyz, new_scene.xyz], dim=1)
         self.scale = torch.cat([self.scale, new_scene.scale], dim=1)
@@ -225,8 +232,9 @@ class PointGenerator(nn.Module):
         self.conv_in = CoordInjection_const(
             pe_dim=256, pe_res=512
         )  # this will be used by default
-        self.n_position_transformer = options["n_position_transformer"]
-        self.n_feature_transformer = options["n_feature_transformer"]
+        self.num_pts = options["num_pts"]
+        self.gnn_num_blocks = options["gnn_num_blocks"]
+        self.bias_num_blocks = options["bias_num_blocks"]
 
         _position_keys = EasyDict(
             xyz=EasyDict(out_dim=3, weight_init=1.0, lr_mult=1.0, bias_init=0.0),
@@ -240,11 +248,14 @@ class PointGenerator(nn.Module):
         )
 
         self.num_ws = 0
-        self.position_transformer = Transformer(
-            width=512, layers=self.n_position_transformer, w_dim=w_dim
+        self.position_gnn = nn.ModuleList(
+            [GNNConv(512, 512, w_dim=w_dim) for _ in range(self.gnn_num_blocks)]
         )
-        self.feature_transformer = Transformer(
-            width=256, layers=self.n_feature_transformer, w_dim=w_dim
+        self.feature_gnn = nn.ModuleList(
+            [
+                BiasBlock(self.num_pts, 256, 256, w_dim=w_dim)
+                for _ in range(self.bias_num_blocks)
+            ]
         )
 
         self.position_decoder = nn.ModuleDict()
@@ -288,21 +299,12 @@ class PointGenerator(nn.Module):
 
         self.xyz_output_scale = options["xyz_output_scale"]  # default: 0.1
 
-        min_scale = np.exp(options["scale_end"])
-        self.percent_dense = (
-            min_scale  # if scale is less than min_scale, do not apply split
-        )
-        num_upsample = np.log2(options["res_end"] * 2) - np.log2(4)
-        self.split_ratio = np.exp(
-            (options["scale_init"] - np.log(min_scale)) / (num_upsample - 1)
-        )
-
     def forward(self, x, ws):
         B, num_points, C = x.shape
 
         prev_anchors = EasyDict(
             xyz=0,
-            scale=torch.tensor(-5.0, device=x.device),
+            scale=torch.tensor(-4.0, device=x.device),
             rotation=self.rotation_init,
             color=self.color_init,
             opacity=self.opacity_init,
@@ -310,30 +312,28 @@ class PointGenerator(nn.Module):
 
         output_gaussians = GaussianScene(device=x.device, batch_size=B)
 
-        x = self.conv_in(x)  # positional encoding
+        for i, w_i in enumerate(ws):
+            for i in range(self.gnn_num_blocks):
+                x = self.position_gnn[i](x, None, w_i)
+            x_pos = x
 
-        x = x_pos = self.position_transformer(x, ws)
+            for i in range(self.bias_num_blocks):
+                x = self.feature_gnn[i](x, None, w_i)
+            x_feat = x
 
-        x = self.linear(x)  # transform features for the feature transformer
+            out = EasyDict(
+                **{
+                    k: self.position_decoder[k](x_pos)
+                    for k in self._position_keys.keys()
+                },
+                **{
+                    k: self.feature_decoder[k](x_feat)
+                    for k in self._feature_keys.keys()
+                },
+            )
 
-        x = x_feat = self.feature_transformer(x, ws)
-
-        # Concatenate position and feature outputs to one dictionary
-        transformer_out = EasyDict(
-            **{k: self.position_decoder[k](x_pos) for k in self._position_keys.keys()},
-            **{k: self.feature_decoder[k](x_feat) for k in self._feature_keys.keys()},
-        )
-
-        new_gaussian = self.postprocessing_block(transformer_out, prev_anchors)
-        output_gaussians.concat(new_gaussian)
-
-        # Output phase
-        B, num_points, _ = output_gaussians.xyz.shape
-        output_gaussians.xyz = output_gaussians.xyz.view(B, num_points, -1)
-        output_gaussians.scale = output_gaussians.scale.view(B, num_points, -1)
-        output_gaussians.rotation = output_gaussians.rotation.view(B, num_points, -1)
-        output_gaussians.color = output_gaussians.color.view(B, num_points, -1)
-        output_gaussians.opacity = output_gaussians.opacity.view(B, num_points, -1)
+            new_gaussian = self.postprocessing_block(out, prev_anchors)
+            output_gaussians.put(i, **new_gaussian)
 
         output_gaussians.xyz = torch.clamp(output_gaussians.xyz, -0.5, 0.5)
 
@@ -350,9 +350,8 @@ class PointGenerator(nn.Module):
         color_new = gaussian.color + prev_anchor.color
         opacity_new = gaussian.opacity + prev_anchor.opacity
 
-        xyz_new = gaussian.xyz * 0.2
+        xyz_new = torch.tanh(gaussian.xyz) * self.xyz_output_scale
         scale_new = prev_anchor.scale + gaussian.scale
-        scale_new = torch.nn.functional.softplus(scale_new)
 
         new_gaussian = EasyDict(
             xyz=xyz_new,

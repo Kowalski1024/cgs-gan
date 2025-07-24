@@ -17,6 +17,10 @@ from training.networks_stylegan2 import MappingNetwork
 from training.gaussian3d_splatting.renderer import Renderer
 
 from training.point_generator import PointGenerator
+from torch_sparse import SparseTensor
+from torch_geometric.data import Data
+from torch_geometric.nn import knn_graph
+import rff
 
 
 @persistence.persistent_class
@@ -47,6 +51,29 @@ class CGSGenerator(torch.nn.Module):
         self.renderer_gaussian3d = Renderer(sh_degree=0)
         self.mapping_network = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.point_gen.num_ws + 1, **mapping_kwargs)
 
+        self.encoder = rff.layers.GaussianEncoding(
+            sigma=10.0, input_size=3, encoded_size=512 // 2
+        )
+
+        self.register_buffer("sphere", self._fibonacci_sphere(self.num_pts, 1.0))
+
+    @staticmethod
+    def _fibonacci_sphere(samples=1000, scale=1.0):
+        phi = torch.pi * (3.0 - torch.sqrt(torch.tensor(5.0)))
+
+        indices = torch.arange(samples)
+        y = 1 - (indices / float(samples - 1)) * 2
+        radius = torch.sqrt(1 - y * y)
+
+        theta = phi * indices
+
+        x = torch.cos(theta) * radius
+        z = torch.sin(theta) * radius
+
+        points = torch.stack([x, y, z], dim=-1)
+
+        return points * scale
+
     def mapping(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
         return self.mapping_network(z, torch.zeros_like(c), truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
 
@@ -63,8 +90,12 @@ class CGSGenerator(torch.nn.Module):
 
         focalx, focaly, near, far = intrinsics[:, 0,0], intrinsics[:, 1,1], 0.1, 10
 
-        sample_coordinates = torch.tanh(self._xyz.unsqueeze(0).repeat(len(ws), 1, 1))
-        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(sample_coordinates, ws)
+        pos, batch = self.sphere, None
+        edge_index = knn_graph(pos, k=6, batch=batch)
+        edge_index = SparseTensor.from_edge_index(edge_index)
+        encoded_pos = self.encoder(pos)
+
+        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(encoded_pos, ws)
         dec_out = {}
         dec_out["sample_coordinates"] = sample_coordinates
         dec_out["scale"] = sample_scale

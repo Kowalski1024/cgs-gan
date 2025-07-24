@@ -60,6 +60,25 @@ def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
     return symm
 
 
+class _TruncExp(torch.autograd.Function):  # pylint: disable=abstract-method
+    # Implementation from torch-ngp:
+    # https://github.com/ashawkey/torch-ngp/blob/93b08a0d4ec1cc6e69d85df7f0acdfb99603b628/activation.py
+    @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
+    def forward(ctx, x):  # pylint: disable=arguments-differ
+        ctx.save_for_backward(x)
+        return torch.exp(x)
+
+    @staticmethod
+    @torch.cuda.amp.custom_bwd
+    def backward(ctx, g):  # pylint: disable=arguments-differ
+        x = ctx.saved_tensors[0]
+        return g * torch.exp(torch.clamp(x, max=15))
+
+
+trunc_exp = _TruncExp.apply
+
+
 class Renderer:
     def __init__(self, sh_degree=0, white_background=True, radius=1):
         
@@ -70,8 +89,8 @@ class Renderer:
             [1, 1, 1] if white_background else [0, 0, 0],
             dtype=torch.float32,
         )
-                
-        self.scaling_activation = torch.exp
+
+        self.scaling_activation = trunc_exp
         self.scaling_inverse_activation = torch.log
         self.covariance_activation = build_covariance_from_scaling_rotation
         self.opacity_activation = torch.sigmoid
@@ -82,7 +101,8 @@ class Renderer:
         self.max_sh_degree = 0
         
     def get_scaling(self, _scaling):
-        return self.scaling_activation(_scaling)
+        scales = self.scaling_activation(_scaling)
+        return torch.clamp(scales, min=1e-4, max=0.03)
     
     def get_rotation(self, _rotation):
         return self.rotation_activation(_rotation)

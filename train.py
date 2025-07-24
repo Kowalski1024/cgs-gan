@@ -138,15 +138,15 @@ def main(**kwargs):
     c.G_kwargs.rendering_kwargs = {
         "image_resolution": c.training_set_kwargs.resolution,
         "custom_options":{
-            "scale_init": np.log((1 / np.sqrt(opts.gaussian_num_pts)) * 0.5),
+            "scale_init": -5,
             "scale_threshold": np.log((1 / np.sqrt(opts.gaussian_num_pts)) * 0.5),
             "scale_end": np.log((1 / c.training_set_kwargs.resolution) * 0.5),
-            "xyz_output_scale": 0.1,                            # Additional scale for coarsest xyz
+            "xyz_output_scale": 0.6,                            # Additional scale for coarsest xyz
             "res_end": c.training_set_kwargs.resolution // 4,
             "num_pts": opts.gaussian_num_pts,                   # Number of initial gaussians
             "use_start_pe": opts.start_pe,                      # Use positional encoding on learnable constant
-            "n_position_transformer": 5,
-            "n_feature_transformer": 3
+            "gnn_num_blocks": 3,
+            "bias_num_blocks": 3,
         }
     }
 
