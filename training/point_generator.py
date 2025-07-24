@@ -197,29 +197,6 @@ def inverse_sigmoid(x):
     return torch.log(x / (1 - x))
 
 
-class GaussianScene:
-    def __init__(self, device, batch_size):
-        self.xyz = torch.empty((batch_size, 0, 3), device=device)
-        self.scale = torch.empty((batch_size, 0, 3), device=device)
-        self.rotation = torch.empty((batch_size, 0, 4), device=device)
-        self.opacity = torch.empty((batch_size, 0, 1), device=device)
-        self.color = torch.empty((batch_size, 0, 3), device=device)
-
-    def put(self, idx, xyz, scale, rotation, color, opacity):
-        self.xyz[idx] = xyz
-        self.scale[idx] = scale
-        self.rotation[idx] = rotation
-        self.color[idx] = color
-        self.opacity[idx] = opacity
-
-    def concat(self, new_scene):
-        self.xyz = torch.cat([self.xyz, new_scene.xyz], dim=1)
-        self.scale = torch.cat([self.scale, new_scene.scale], dim=1)
-        self.rotation = torch.cat([self.rotation, new_scene.rotation], dim=1)
-        self.color = torch.cat([self.color, new_scene.color], dim=1)
-        self.opacity = torch.cat([self.opacity, new_scene.opacity], dim=1)
-
-
 @persistence.persistent_class
 class PointGenerator(nn.Module):
     def __init__(
@@ -310,7 +287,11 @@ class PointGenerator(nn.Module):
             opacity=self.opacity_init,
         )
 
-        output_gaussians = GaussianScene(device=x.device, batch_size=B)
+        xyz = torch.empty((B, self.num_pts, 3), device=self.device)
+        scale = torch.empty((B, self.num_pts, 3), device=self.device)
+        rotation = torch.empty((B, self.num_pts, 4), device=self.device)
+        opacity = torch.empty((B, self.num_pts, 1), device=self.device)
+        color = torch.empty((B, self.num_pts, 3), device=self.device)
 
         for i, w_i in enumerate(ws):
             for i in range(self.gnn_num_blocks):
@@ -335,16 +316,21 @@ class PointGenerator(nn.Module):
             )
 
             new_gaussian = self.postprocessing_block(out, prev_anchors)
-            output_gaussians.put(i, **new_gaussian)
+            xyz[i] = new_gaussian.xyz
+            scale[i] = new_gaussian.scale
+            rotation[i] = new_gaussian.rotation
+            color[i] = new_gaussian.color
+            opacity[i] = new_gaussian.opacity
+            
 
-        output_gaussians.xyz = torch.clamp(output_gaussians.xyz, -0.5, 0.5)
+        xyz = torch.clamp(xyz, -0.5, 0.5)
 
         return (
-            output_gaussians.xyz,
-            output_gaussians.scale,
-            output_gaussians.rotation,
-            output_gaussians.color,
-            output_gaussians.opacity,
+            xyz,
+            scale,
+            rotation,
+            color,
+            opacity,
         )
 
     def postprocessing_block(self, gaussian: EasyDict, prev_anchor: EasyDict):
