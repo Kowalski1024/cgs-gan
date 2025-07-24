@@ -186,7 +186,7 @@ class GNNConv(gnn.MessagePassing):
 
         self.lin_in = SynthesisLayer(channels_in, channels_out, w_dim=w_dim)
         self.lin_edge = SynthesisLayer(channels_out, channels_out, w_dim=w_dim)
-        self.edge_scale = nn.Parameter(torch.full(channels_out, edge_scale_init))
+        self.edge_scale = nn.Parameter(torch.full((channels_out,), edge_scale_init))
 
     def forward(self, x: Tensor, edge_index: Adj, w) -> Tensor:
         x = self.lin_in(x, w)
