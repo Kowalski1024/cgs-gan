@@ -300,7 +300,7 @@ class PointGenerator(nn.Module):
         self.xyz_output_scale = options["xyz_output_scale"]  # default: 0.1
 
     def forward(self, x, ws):
-        B, num_points, C = x.shape
+        B = ws.shape[0]
 
         prev_anchors = EasyDict(
             xyz=0,
