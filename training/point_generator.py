@@ -24,9 +24,13 @@ class LinLinear(nn.Module):
 
         self.linear = nn.Linear(ch_in, ch_out, bias=bias)
         if is_first:
-            nn.init.uniform_(self.linear.weight, -np.sqrt(9 / ch_in), np.sqrt(9 / ch_in))
+            nn.init.uniform_(
+                self.linear.weight, -np.sqrt(9 / ch_in), np.sqrt(9 / ch_in)
+            )
         else:
-            nn.init.uniform_(self.linear.weight, -np.sqrt(3 / ch_in), np.sqrt(3 / ch_in))
+            nn.init.uniform_(
+                self.linear.weight, -np.sqrt(3 / ch_in), np.sqrt(3 / ch_in)
+            )
 
     def forward(self, x):
         return self.linear(x)
@@ -67,12 +71,23 @@ class constant_PE(nn.Module):
 
         x_coord = pos  # (x + 1) / 2 # range of x: (-1, 1)
         x_coord = x_coord.unsqueeze(-1)  # [B, L, 3, 1]
-        x_coord = x_coord.permute(0, 2, 1, 3).reshape(3 * B, 1, L, 1)  # [B * 3, 1, L, 1]
-        x_coord = torch.cat([torch.zeros_like(x_coord), x_coord], dim=-1)  # [B * 3, 1, L, 2]
+        x_coord = x_coord.permute(0, 2, 1, 3).reshape(
+            3 * B, 1, L, 1
+        )  # [B * 3, 1, L, 1]
+        x_coord = torch.cat(
+            [torch.zeros_like(x_coord), x_coord], dim=-1
+        )  # [B * 3, 1, L, 2]
 
         const_pe = self.const_pe.repeat([B, 1, 1, 1])  # [B * 3, C, 1, L]
-        const_emb = torch.nn.functional.grid_sample(const_pe, x_coord, mode="bilinear")  # [B * 3, C, 1, L]
-        const_emb = const_emb.reshape(B, 3, self.pe_dim, 1, L).sum(1).reshape(B, self.pe_dim, L).permute(0, 2, 1)  # [B, L, C]
+        const_emb = torch.nn.functional.grid_sample(
+            const_pe, x_coord, mode="bilinear"
+        )  # [B * 3, C, 1, L]
+        const_emb = (
+            const_emb.reshape(B, 3, self.pe_dim, 1, L)
+            .sum(1)
+            .reshape(B, self.pe_dim, L)
+            .permute(0, 2, 1)
+        )  # [B, L, C]
         return const_emb / np.sqrt(3)
 
 
@@ -90,18 +105,26 @@ class PointUpsample_subpixel(torch.nn.Module):
         self.out_features = out_features
         self.upsample_ratio = upsample_ratio
 
-        self.subpixel = FullyConnectedLayer(in_features, out_features * (upsample_ratio), activation="lrelu")
+        self.subpixel = FullyConnectedLayer(
+            in_features, out_features * (upsample_ratio), activation="lrelu"
+        )
 
         if in_features != out_features:
-            self.res_fc = FullyConnectedLayer(in_features, out_features, activation="linear")
+            self.res_fc = FullyConnectedLayer(
+                in_features, out_features, activation="linear"
+            )
         else:
             self.res_fc = Identity()
 
     def forward(self, x):
         # x: [B, L, C],
         B, L, C = x.shape
-        x_upsampled = self.subpixel(x).reshape(B, L * self.upsample_ratio, self.out_features)
-        x_upsampled = (self.res_fc(x).repeat_interleave(self.upsample_ratio, dim=1) + x_upsampled) / np.sqrt(2)
+        x_upsampled = self.subpixel(x).reshape(
+            B, L * self.upsample_ratio, self.out_features
+        )
+        x_upsampled = (
+            self.res_fc(x).repeat_interleave(self.upsample_ratio, dim=1) + x_upsampled
+        ) / np.sqrt(2)
         return x_upsampled
 
 
@@ -118,7 +141,10 @@ class CoordInjection_const(torch.nn.Module):
 
     def forward(self, pos, x=None, type="cat"):
         if x is not None:
-            x = torch.cat([x, self.learnable_pe(pos).to(x.dtype), self.const_pe(pos).to(x.dtype)], dim=-1)
+            x = torch.cat(
+                [x, self.learnable_pe(pos).to(x.dtype), self.const_pe(pos).to(x.dtype)],
+                dim=-1,
+            )
         else:
             x = torch.cat([self.learnable_pe(pos), self.const_pe(pos)], dim=-1)
         return x
@@ -130,7 +156,9 @@ def get_scaled_directional_vector_from_quaternion(r, s, eps=0.001):
     r, s = r.reshape([N * npoints, -1]), s.reshape([N * npoints, -1])
 
     # Rotation activation (normalize)
-    norm = torch.sqrt(r[:, 0] * r[:, 0] + r[:, 1] * r[:, 1] + r[:, 2] * r[:, 2] + r[:, 3] * r[:, 3])
+    norm = torch.sqrt(
+        r[:, 0] * r[:, 0] + r[:, 1] * r[:, 1] + r[:, 2] * r[:, 2] + r[:, 3] * r[:, 3]
+    )
     q = r / (norm[:, None] + eps)
 
     # R = torch.zeros((q.size(0), 3, 3), device='cuda')
@@ -194,65 +222,66 @@ class PointGenerator(nn.Module):
     ):
         super().__init__()
 
-        self.conv_in = CoordInjection_const(pe_dim=256, pe_res=512)  # this will be used by default
-        self.n_transformer = options["n_transformer"]
-        self.upsample_ratio =       [1, 4, 4,  4,  2,   2,   2,   2]
-        self.upsample_ratio_accum = [1, 4, 16, 64, 128, 256, 512, 1024]
+        self.conv_in = CoordInjection_const(
+            pe_dim=256, pe_res=512
+        )  # this will be used by default
+        self.n_position_transformer = options["n_position_transformer"]
+        self.n_feature_transformer = options["n_feature_transformer"]
 
-        def get_features(layer, upsample_ratio):
-            if layer == 7:
-                return 8
-            return max(16, 512 // 2 ** layer)
+        _position_keys = EasyDict(
+            xyz=EasyDict(out_dim=3, weight_init=1.0, lr_mult=1.0, bias_init=0.0),
+            scale=EasyDict(out_dim=3, weight_init=0.1, lr_mult=1.0, bias_init=-1.0),
+            rotation=EasyDict(out_dim=4, weight_init=0.1, lr_mult=1.0, bias_init=0.0),
+        )
 
-
-        _out_keys = EasyDict(
-            xyz=        EasyDict(out_dim=3, weight_init=1.0, lr_mult=1.0, bias_init=0.0),
-            scale=      EasyDict(out_dim=3, weight_init=0.1, lr_mult=1.0, bias_init=-1.0),
-            rotation=   EasyDict(out_dim=4, weight_init=0.1, lr_mult=1.0, bias_init=0.0),
-            color=      EasyDict(out_dim=3, weight_init=1.0, lr_mult=1.0, bias_init=0.0),
-            opacity=    EasyDict(out_dim=1, weight_init=1.0, lr_mult=1.0, bias_init=0.0),
+        _feature_keys = EasyDict(
+            color=EasyDict(out_dim=3, weight_init=1.0, lr_mult=1.0, bias_init=0.0),
+            opacity=EasyDict(out_dim=1, weight_init=1.0, lr_mult=1.0, bias_init=0.0),
         )
 
         self.num_ws = 0
-        self.transformer = Transformer(width=512, layers=self.n_transformer, w_dim=w_dim)
-        self.upsample_layers = nn.ModuleList([
-            PointUpsample_subpixel(
-                in_features=512,
-                out_features=get_features(i, self.upsample_ratio[i]),
-                upsample_ratio=self.upsample_ratio_accum[i]
-            ) for i in range(self.n_transformer)
-        ])
+        self.position_transformer = Transformer(
+            width=512, layers=self.n_position_transformer, w_dim=w_dim
+        )
+        self.feature_transformer = Transformer(
+            width=256, layers=self.n_feature_transformer, w_dim=w_dim
+        )
 
-        self.anchors = nn.ModuleDict()
-        self.gaussians = nn.ModuleDict()
+        self.position_decoder = nn.ModuleDict()
+        self.feature_decoder = nn.ModuleDict()
+        self.linear = FullyConnectedLayer(
+            in_features=512,  # input features from the transformer
+            out_features=256,  # output features for the feature transformer
+            lr_multiplier=1.0,
+            activation="linear",
+            weight_init=1.0,
+            bias_init=0.0,
+        )
 
-        self._out_keys = _out_keys
-        for k in _out_keys.keys():
-            self.anchors[k] = nn.ModuleList([])
-            self.gaussians[k] = nn.ModuleList([])
+        self._position_keys = _position_keys
+        self._feature_keys = _feature_keys
 
+        for k in _position_keys.keys():
+            self.position_decoder[k] = FullyConnectedLayer(
+                in_features=512,  # input features from the transformer
+                out_features=_position_keys[k].out_dim,
+                lr_multiplier=_position_keys[k].lr_mult,
+                activation="linear",
+                weight_init=_position_keys[k].weight_init,
+                bias_init=_position_keys[k].bias_init,
+            )
 
-        for k in _out_keys.keys():
-            for i in range(self.n_transformer):
-                self.anchors[k].append(FullyConnectedLayer(
-                    in_features=get_features(i, self.upsample_ratio[i]),
-                    out_features=_out_keys[k].out_dim,
-                    lr_multiplier=_out_keys[k].lr_mult,
-                    activation="linear",
-                    weight_init=_out_keys[k].weight_init,
-                    bias_init=_out_keys[k].bias_init,
-                ))
-                self.gaussians[k].append(FullyConnectedLayer(
-                    in_features=get_features(i, self.upsample_ratio[i]),
-                    out_features=_out_keys[k].out_dim,
-                    lr_multiplier=_out_keys[k].lr_mult,
-                    activation="linear",
-                    weight_init=_out_keys[k].weight_init,
-                    bias_init=_out_keys[k].bias_init,
-                ))
+        for k in _feature_keys.keys():
+            self.feature_decoder[k] = FullyConnectedLayer(
+                in_features=256,  # input features from the transformer
+                out_features=_feature_keys[k].out_dim,
+                lr_multiplier=_feature_keys[k].lr_mult,
+                activation="linear",
+                weight_init=_feature_keys[k].weight_init,
+                bias_init=_feature_keys[k].bias_init,
+            )
 
         self.register_buffer("scale_init", torch.ones([3]) * options["scale_init"])
-        self.register_buffer("scale_threshold", torch.ones([3]) * options["scale_threshold"])
         self.register_buffer("rotation_init", torch.tensor([1, 0, 0, 0]))
         self.register_buffer("color_init", torch.tensor(torch.zeros([3])))
         self.register_buffer("opacity_init", inverse_sigmoid(0.1 * torch.ones([1])))
@@ -260,59 +289,43 @@ class PointGenerator(nn.Module):
         self.xyz_output_scale = options["xyz_output_scale"]  # default: 0.1
 
         min_scale = np.exp(options["scale_end"])
-        self.percent_dense = min_scale  # if scale is less than min_scale, do not apply split
+        self.percent_dense = (
+            min_scale  # if scale is less than min_scale, do not apply split
+        )
         num_upsample = np.log2(options["res_end"] * 2) - np.log2(4)
-        self.split_ratio = np.exp((options["scale_init"] - np.log(min_scale)) / (num_upsample - 1))
+        self.split_ratio = np.exp(
+            (options["scale_init"] - np.log(min_scale)) / (num_upsample - 1)
+        )
 
     def forward(self, x, ws):
         B, num_points, C = x.shape
 
         prev_anchors = EasyDict(
             xyz=0,
-            scale=torch.tensor(-5., device=x.device),
+            scale=torch.tensor(-5.0, device=x.device),
             rotation=self.rotation_init,
             color=self.color_init,
             opacity=self.opacity_init,
         )
 
         output_gaussians = GaussianScene(device=x.device, batch_size=B)
-        output_anchors = GaussianScene(device=x.device, batch_size=B)
 
-        x = self.conv_in(x) # positional encoding
+        x = self.conv_in(x)  # positional encoding
 
-        transformer_out = self.transformer(x, ws)
+        x = x_pos = self.position_transformer(x, ws)
 
-        for i in range(self.n_transformer):
-            is_last_layer = i == self.n_transformer - 1
-            is_first_layer = i == 0
+        x = self.linear(x)  # transform features for the feature transformer
 
-            # create features (512 points, 512 channels)
-            current_features = transformer_out[i]
-            upsampled_features = self.upsample_layers[i](current_features)
+        x = x_feat = self.feature_transformer(x, ws)
 
-            # upsample anchors
-            if not is_first_layer: # not for the first layer since it has not prior anchors
-                for key in prev_anchors.keys():
-                    prev_anchors[key] = prev_anchors[key].repeat_interleave(self.upsample_ratio[i], dim=1)
+        # Concatenate position and feature outputs to one dictionary
+        transformer_out = EasyDict(
+            **{k: self.position_decoder[k](x_pos) for k in self._position_keys.keys()},
+            **{k: self.feature_decoder[k](x_feat) for k in self._feature_keys.keys()},
+        )
 
-
-            # generate anchors from features
-            if not is_last_layer:
-                current_anchors = EasyDict(**{k: self.anchors[k][i](upsampled_features) for k in ["xyz", "scale", "rotation", "color", "opacity"]})
-                current_anchors = self.postprocessing_block(current_anchors, prev_anchors, is_first_anchor=is_first_layer)
-                output_anchors.concat(current_anchors)
-                # use current anchors in the first layer as the previous anchors
-                if is_first_layer:
-                    prev_anchors = current_anchors
-
-            # generate gaussians
-            current_gaussians = EasyDict(**{k: self.gaussians[k][i](upsampled_features) for k in ["xyz", "scale", "rotation", "color", "opacity"]})
-            new_gaussian = self.postprocessing_block(current_gaussians, prev_anchors)
-
-            # update previous anchors with current anchors
-            if not is_last_layer:
-                prev_anchors = current_anchors
-            output_gaussians.concat(new_gaussian)
+        new_gaussian = self.postprocessing_block(transformer_out, prev_anchors)
+        output_gaussians.concat(new_gaussian)
 
         # Output phase
         B, num_points, _ = output_gaussians.xyz.shape
@@ -330,36 +343,22 @@ class PointGenerator(nn.Module):
             output_gaussians.rotation,
             output_gaussians.color,
             output_gaussians.opacity,
-            [output_anchors.xyz, output_anchors.scale, output_anchors.rotation, output_anchors.color, output_anchors.opacity],
         )
 
-    def postprocessing_block(self, gaussian: EasyDict, prev_anchor: EasyDict, is_first_anchor=False):
+    def postprocessing_block(self, gaussian: EasyDict, prev_anchor: EasyDict):
         rotation_new = gaussian.rotation + prev_anchor.rotation
         color_new = gaussian.color + prev_anchor.color
         opacity_new = gaussian.opacity + prev_anchor.opacity
 
-        if is_first_anchor:
-            xyz_new = gaussian.xyz * 0.2
-            scale_new = prev_anchor.scale + gaussian.scale
-            scale_new = -torch.nn.functional.softplus(-(scale_new  - self.scale_threshold)) + self.scale_threshold
-        else:
-            xyz_new = torch.tanh(gaussian.xyz)
-            R_anchor = get_scaled_directional_vector_from_quaternion(prev_anchor.rotation, prev_anchor.scale)  # [B, num_points * N, 3, 3]
-            xyz_new = (R_anchor @ xyz_new.unsqueeze(-1)).squeeze(-1) + prev_anchor.xyz  # [B, num_points * N, 3]
-
-            scale_split = torch.log(torch.exp(prev_anchor.scale) / self.split_ratio)
-            scale_split = torch.clamp(scale_split, -1e2, 0) # remove -inf
-            scale_max = torch.exp(prev_anchor.scale).max(-1, keepdim=True)[0]
-            split_idx = torch.where(scale_max > self.percent_dense, 1.0, 0.0)
-            scale = prev_anchor.scale * (1.0 - split_idx) + scale_split * split_idx
-            scale_new = scale - torch.nn.functional.softplus(-gaussian.scale)
+        xyz_new = gaussian.xyz * 0.2
+        scale_new = prev_anchor.scale + gaussian.scale
+        scale_new = torch.nn.functional.softplus(scale_new)
 
         new_gaussian = EasyDict(
             xyz=xyz_new,
             scale=torch.tanh(scale_new * 0.05) * 20,
             rotation=torch.tanh(rotation_new * 0.05) * 20,
             color=torch.tanh(color_new * 0.05) * 20,
-            opacity=torch.tanh(opacity_new * 0.05) * 20
+            opacity=torch.tanh(opacity_new * 0.05) * 20,
         )
         return new_gaussian
-

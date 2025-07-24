@@ -102,7 +102,7 @@ def main(**kwargs):
 
     # Training Data
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
-    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name="training.dataset.ImageFolderDataset", data=opts.data, cam_sample_mode=opts.cam_sample_mode)
+    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name="training.dataset.CarsDataset", data=opts.data, cam_sample_mode=opts.cam_sample_mode)
     if opts.cond and not c.training_set_kwargs.use_labels:
         raise click.ClickException("--cond=True requires labels specified in dataset.json")
     c.training_set_kwargs.use_labels = opts.cond
@@ -145,7 +145,8 @@ def main(**kwargs):
             "res_end": c.training_set_kwargs.resolution // 4,
             "num_pts": opts.gaussian_num_pts,                   # Number of initial gaussians
             "use_start_pe": opts.start_pe,                      # Use positional encoding on learnable constant
-            "n_transformer": n_transformer_mapping[c.training_set_kwargs.resolution]
+            "n_position_transformer": 5,
+            "n_feature_transformer": 3
         }
     }
 

@@ -130,7 +130,6 @@ class Transformer(nn.Module):
             w_dim,
             width: int,
             layers: int,
-            num_first_layers=6,
             heads: int = 8,
     ):
         super().__init__()
@@ -142,27 +141,11 @@ class Transformer(nn.Module):
                 heads=heads,
                 w_dim=w_dim
             )
-            for i in range(layers - 1)
+            for _ in range(layers)
         ])
-
-        self.first_layers = nn.ModuleList([
-            ResidualAttentionBlock(
-                width=width,
-                heads=heads,
-                w_dim=w_dim
-            )
-            for i in range(num_first_layers)
-        ])
-        self.num_first_layers = num_first_layers
 
     def forward(self, x: torch.Tensor, ws: torch.Tensor):
-        results = []
-
-        for i in range(self.num_first_layers):
-            x = self.first_layers[i](x, ws)
-        results.append(x)
-
         for i in range(len(self.resblocks)):
             x = self.resblocks[i](x, ws)
-            results.append(x)
-        return results
+
+        return x

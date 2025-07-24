@@ -112,18 +112,12 @@ class StyleGAN2Loss(Loss):
                     gen_logits = self.run_D(gen_result, gen_c, blur_sigma=blur_sigma)
                     loss_Gmain = torch.nn.functional.softplus(-gen_logits)
 
-                anchors = gen_result['anchors'][:, :self.G.num_pts]
-                dist = knn_distance(anchors, k=self.coeffs['knn_num_ks']).mean()
-                dist_center = anchors.mean(dim=1).square().mean()
-
-                logger.add("Dist Loss", "KNN", dist)
-                logger.add("Dist Loss", "Center", dist_center)
                 logger.add("Loss", "D_loss", gen_logits)
                 logger.add("Loss_Sign", "signs_fake", gen_logits.sign())
                 logger.add("Loss", "G_loss", loss_Gmain)
 
             with torch.autograd.profiler.record_function('Gmain_backward'):
-                ((loss_Gmain).mean().mul(gain) + dist_center.mean() * self.coeffs['center_dists'] + dist * self.coeffs['knn_dists']).backward()
+                ((loss_Gmain).mean().mul(gain)).backward()
                 clip_grad_norm_(self.G.parameters(), max_norm=20)
 
         # Dmain: Minimize logits for generated images.

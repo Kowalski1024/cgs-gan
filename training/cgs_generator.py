@@ -61,7 +61,7 @@ class CGSGenerator(torch.nn.Module):
         focalx, focaly, near, far = intrinsics[:, 0,0], intrinsics[:, 1,1], 0.1, 10
 
         sample_coordinates = torch.tanh(self._xyz.unsqueeze(0).repeat(len(ws), 1, 1))
-        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity, anchors = self.point_gen(sample_coordinates, ws)
+        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(sample_coordinates, ws)
         dec_out = {}
         dec_out["sample_coordinates"] = sample_coordinates
         dec_out["scale"] = sample_scale
@@ -85,14 +85,11 @@ class CGSGenerator(torch.nn.Module):
                 fovx = focal2fov(focalx[batch_idx])
                 fovy = focal2fov(focaly[batch_idx])
                 cur_cam = CustomCam(resolution, resolution, fovy=fovy, fovx=fovx, extr=cam2world_matrix[batch_idx])
-                if random_bg:
-                    bg = torch.rand(3, device=ws.device)
-                else:
-                    bg = torch.ones(3, device=ws.device)
+                bg = torch.ones(3, device=ws.device)
                 ret_dict = self.renderer_gaussian3d.render(gaussian_params_i, cur_cam, bg=bg)
                 rendered_images.append(ret_dict["image"].unsqueeze(0))
 
-        return_dict = {'anchors': anchors[0], 'gaussian_params': gaussian_params}
+        return_dict = {'gaussian_params': gaussian_params}
         if render_output:
             return_dict["image"] = torch.cat(rendered_images, dim=0).to(ws.device)
         return return_dict
