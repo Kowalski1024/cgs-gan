@@ -32,7 +32,7 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--cam_sample_mode",  help="found in custom dist",                    type=str,   default="smile_pose_rebalancing")
 @click.option("--outdir",           help="Where to save the results",               type=str,   default="./training-results")
 @click.option("--cond",             help="Train conditional model",                 type=bool,  default=True)
-@click.option("--mirror",           help="Enable dataset x-flips",                  type=bool,  default=True)
+@click.option("--mirror",           help="Enable dataset x-flips",                  type=bool,  default=False)
 @click.option("--freezed",          help="Freeze first layers of D",                type=int,   default=0)
 # Misc hyperparameters.
 @click.option("--gpus",             help="Number of GPUs to use",                   type=int,   default=1)
