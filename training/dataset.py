@@ -44,6 +44,7 @@ class Dataset(torch.utils.data.Dataset):
         use_labels=False,  # Enable conditioning labels? False = label dimension is zero.
         xflip=False,  # Artificially double the size of the dataset via x-flips. Applied after max_size.
         random_seed=0,  # Random seed to use when applying max_size.
+        **kwargs,  # Additional arguments for the Dataset base class.
     ):
         self._name = name
         self._raw_shape = list(raw_shape)
@@ -165,7 +166,6 @@ class Dataset(torch.utils.data.Dataset):
 class CarsDataset(Dataset):
     def __init__(self,
         path,                   # Path to directory or zip.
-        resolution      = None, # Ensure specific resolution, None = highest available.
         train: bool = True,
         **super_kwargs,         # Additional arguments for the Dataset base class.
     ):
@@ -189,8 +189,6 @@ class CarsDataset(Dataset):
 
         name = os.path.splitext(os.path.basename(self._path))[0]
         raw_shape = [len(self._all_png_names)] + list(self._load_raw_image(0).shape)
-        if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
-            raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     @staticmethod
