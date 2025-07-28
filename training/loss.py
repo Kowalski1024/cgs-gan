@@ -21,6 +21,7 @@ from camera_utils import focal2fov
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from training.gaussian3d_splatting.custom_cam import CustomCam
 from training.gaussian3d_splatting.renderer import Renderer
+from training.gaussian3d_splatting.camera import extract_cameras
 
 PARAMETERS_DTYPE = Union[torch.Tensor, Iterable[torch.Tensor]]
 
@@ -81,29 +82,26 @@ class StyleGAN2Loss(Loss):
                     # multi view regularization
                     gen_result, _gen_ws = self.run_G(gen_z, gen_c, resolution=self.resolution, render_output=False)
                     num_opt_steps = self.coeffs["num_multiview"]
-                    fov = focal2fov(gen_c[0, 20])
+
                     loss_Gmain = 0
                     for i in range(num_opt_steps):
                         batch_renderings = []
-                        batch_cams = []
                         gen_c = torch.roll(gen_c, 1, dims=0)
-                        for batch_idx, current_scene in enumerate(gen_result["gaussian_params"]):
-                            extrinsic = gen_c[batch_idx, :16].reshape(4, 4)
-                            intrinsics = torch.tensor([
-                                gen_c[0, 16], 0.0,    0.5,
-                                0.0,    gen_c[0, 20], 0.5,
-                                0.0,    0.0,    1.0
-                            ], device="cuda")
 
-                            render_cam = CustomCam(self.resolution, self.resolution, fovy=fov, fovx=fov, extr=extrinsic)
-                            bg = torch.rand(3, device=gen_z.device)
-                            ret_dict = self.renderer_gaussian3d.render(gaussian_params=current_scene, viewpoint_camera=render_cam, bg=bg)
+                        cam2world_matrix = gen_c[:, :16].view(-1, 4, 4)
+                        intrinsics = gen_c[:, 16:25].view(-1, 3, 3)
+
+                        cameras = extract_cameras(cam2world_matrix, intrinsics, self.resolution)
+
+                        for batch_idx, current_scene in enumerate(gen_result["gaussian_params"]):
+                            camera = cameras[batch_idx]
+
+                            bg = torch.ones(3, device=gen_z.device)
+                            ret_dict = self.renderer_gaussian3d.render(gaussian_params=current_scene, viewpoint_camera=camera, bg=bg)
                             batch_renderings.append(ret_dict["image"])
-                            batch_cams.append(torch.concat([extrinsic.reshape(-1), intrinsics], dim=0))
 
                         renderings = torch.stack(batch_renderings, dim=0)
-                        cams = torch.stack(batch_cams, dim=0)
-                        gen_logits = self.run_D({"image": renderings}, cams, blur_sigma=blur_sigma)
+                        gen_logits = self.run_D({"image": renderings}, gen_c, blur_sigma=blur_sigma)
                         loss_Gmain += torch.nn.functional.softplus(-gen_logits)
                     loss_Gmain /= num_opt_steps
                 else:
