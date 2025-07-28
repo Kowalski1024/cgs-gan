@@ -110,12 +110,19 @@ class StyleGAN2Loss(Loss):
                     gen_logits = self.run_D(gen_result, gen_c, blur_sigma=blur_sigma)
                     loss_Gmain = torch.nn.functional.softplus(-gen_logits)
 
+                gaussians = gen_result["gaussian_params"]
+                position_loss_list = []
+                for gauss in gaussians:
+                    position_loss_list.append(gauss["_xyz"].pow(2).mean())
+                position_loss = torch.stack(position_loss_list).mean()
+
+                logger.add("Position_Loss", "position_loss", position_loss)
                 logger.add("Loss", "D_loss", gen_logits)
                 logger.add("Loss_Sign", "signs_fake", gen_logits.sign())
                 logger.add("Loss", "G_loss", loss_Gmain)
 
             with torch.autograd.profiler.record_function('Gmain_backward'):
-                ((loss_Gmain).mean().mul(gain)).backward()
+                ((loss_Gmain).mean().mul(gain) + position_loss * self.coeffs["position_reg"]).backward()
                 clip_grad_norm_(self.G.parameters(), max_norm=20)
 
         # Dmain: Minimize logits for generated images.

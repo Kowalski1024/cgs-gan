@@ -294,15 +294,17 @@ class PointGenerator(nn.Module):
         color = torch.empty((B, self.num_pts, 3), device=ws.device)
 
         for i, w_i in enumerate(ws):
-            for i in range(self.gnn_num_blocks):
-                x = self.position_gnn[i](x, edge_index, w_i)
-            x_pos = x
+            x_i = x
 
-            x = self.linear(x)  # [B, L, 256]
+            for j in range(self.gnn_num_blocks):
+                x_i = self.position_gnn[j](x_i, edge_index, w_i)
+            x_pos = x_i
 
-            for i in range(self.bias_num_blocks):
-                x = self.feature_gnn[i](x, edge_index, w_i)
-            x_feat = x
+            x_i = self.linear(x_i)  # [B, L, 256]
+
+            for j in range(self.bias_num_blocks):
+                x_i = self.feature_gnn[j](x_i, edge_index, w_i)
+            x_feat = x_i
 
             out = EasyDict(
                 **{
@@ -316,12 +318,12 @@ class PointGenerator(nn.Module):
             )
 
             new_gaussian = self.postprocessing_block(out, prev_anchors)
+            
             xyz[i] = new_gaussian.xyz
             scale[i] = new_gaussian.scale
             rotation[i] = new_gaussian.rotation
             color[i] = new_gaussian.color
             opacity[i] = new_gaussian.opacity
-            
 
         xyz = torch.clamp(xyz, -0.5, 0.5)
 

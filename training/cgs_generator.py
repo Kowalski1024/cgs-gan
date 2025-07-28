@@ -16,7 +16,7 @@ from training.gaussian3d_splatting.camera import extract_cameras
 from training.networks_stylegan2 import MappingNetwork
 from training.gaussian3d_splatting.renderer import Renderer
 
-from training.point_generator import PointGenerator
+from training.gnn_point_generator import PointGenerator
 from torch_sparse import SparseTensor
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
@@ -52,10 +52,11 @@ class CGSGenerator(torch.nn.Module):
         self.mapping_network = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.point_gen.num_ws + 1, **mapping_kwargs)
 
         self.encoder = rff.layers.GaussianEncoding(
-            sigma=10.0, input_size=3, encoded_size=512 // 2
+            sigma=10.0, input_size=3, encoded_size=128 // 2
         )
 
         self.register_buffer("sphere", self._fibonacci_sphere(self.num_pts, 1.0))
+        self.register_buffer("edge_index", knn_graph(self.sphere, k=6, batch=None))
 
     @staticmethod
     def _fibonacci_sphere(samples=1000, scale=1.0):
@@ -91,11 +92,10 @@ class CGSGenerator(torch.nn.Module):
         focalx, focaly, near, far = intrinsics[:, 0,0], intrinsics[:, 1,1], 0.1, 10
 
         pos, batch = self.sphere, None
-        edge_index = knn_graph(pos, k=6, batch=batch)
-        edge_index = SparseTensor.from_edge_index(edge_index)
+        edge_index = SparseTensor.from_edge_index(self.edge_index)
         encoded_pos = self.encoder(pos)
 
-        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(encoded_pos, edge_index, ws)
+        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(pos, encoded_pos, edge_index, ws)
         dec_out = {}
         dec_out["sample_coordinates"] = sample_coordinates
         dec_out["scale"] = sample_scale

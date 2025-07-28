@@ -14,6 +14,7 @@ class Camera(NamedTuple):
 
 
 def extract_cameras(camera_to_world, intrinsics, image_size) -> list[Camera]:
+    intrinsics = intrinsics * 512
     w2c = torch.inverse(camera_to_world)
 
     # Extract FoVx and FoVy from intrinsics matrix

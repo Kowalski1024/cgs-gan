@@ -212,6 +212,16 @@ def training_loop(
         grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
 
+        out = [G_ema(z=z, c=c, noise_mode='const', random_bg=False)["image"] for z, c in zip(grid_z, grid_c)]
+        images = torch.cat(out).cpu().detach().numpy()
+        torch.cuda.empty_cache()
+        save_image_grid(
+            images, os.path.join(run_dir, 'fakes_init.png'), drange=[-1, 1],
+            grid_size=grid_size, wandb_logger=None
+        )
+
+
+
     # Initialize logs.
     stats_metrics = {}
     logger = CustomLogger()
