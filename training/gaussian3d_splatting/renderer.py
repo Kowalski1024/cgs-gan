@@ -205,7 +205,8 @@ class Renderer:
                 cov3D_precomp=cov3D_precomp,
             )
 
-        rendered_image = rendered_image / 0.5 - 1.
+        rendered_image = torch.clamp(rendered_image, min=0, max=1)
+        rendered_image = rendered_image * 2 - 1.
         return {
             "image": rendered_image,
             "viewspace_points": screenspace_points,
