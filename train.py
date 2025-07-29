@@ -32,7 +32,7 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--cam_sample_mode",  help="found in custom dist",                    type=str,   default="smile_pose_rebalancing")
 @click.option("--outdir",           help="Where to save the results",               type=str,   default="./training-results")
 @click.option("--cond",             help="Train conditional model",                 type=bool,  default=True)
-@click.option("--mirror",           help="Enable dataset x-flips",                  type=bool,  default=True)
+@click.option("--mirror",           help="Enable dataset x-flips",                  type=bool,  default=False)
 @click.option("--freezed",          help="Freeze first layers of D",                type=int,   default=0)
 # Misc hyperparameters.
 @click.option("--gpus",             help="Number of GPUs to use",                   type=int,   default=1)
@@ -102,7 +102,7 @@ def main(**kwargs):
 
     # Training Data
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
-    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name="training.dataset.ImageFolderDataset", data=opts.data, cam_sample_mode=opts.cam_sample_mode)
+    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name="training.dataset.CarsDataset", data=opts.data, cam_sample_mode=opts.cam_sample_mode)
     if opts.cond and not c.training_set_kwargs.use_labels:
         raise click.ClickException("--cond=True requires labels specified in dataset.json")
     c.training_set_kwargs.use_labels = opts.cond
@@ -132,7 +132,7 @@ def main(**kwargs):
 
     # Base configuration.
     c.ema_kimg = c.batch_size * 10 / 32
-    n_transformer_mapping = {256: 5, 512: 6, 1024: 7, 2048: 8}
+    n_transformer_mapping = {128: 3, 256: 5, 512: 6, 1024: 7, 2048: 8}
 
     # Configuration about the model architecture
     c.G_kwargs.rendering_kwargs = {

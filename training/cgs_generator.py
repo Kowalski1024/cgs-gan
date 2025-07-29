@@ -49,7 +49,7 @@ class CGSGenerator(torch.nn.Module):
     def mapping(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
         return self.mapping_network(z, torch.zeros_like(c), truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
 
-    def synthesis(self, ws, c, resolution=None, update_emas=False, gs_params=None, random_bg=True, render_output=True, **synthesis_kwargs):
+    def synthesis(self, ws, c, resolution=None, update_emas=False, gs_params=None, random_bg=False, render_output=True, **synthesis_kwargs):
         cam2world_matrix = c[:, :16].view(-1, 4, 4)
         intrinsics = c[:, 16:25].view(-1, 3, 3)
 

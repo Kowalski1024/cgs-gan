@@ -81,25 +81,23 @@ class StyleGAN2Loss(Loss):
                     # multi view regularization
                     gen_result, _gen_ws = self.run_G(gen_z, gen_c, resolution=self.resolution, render_output=False)
                     num_opt_steps = self.coeffs["num_multiview"]
-                    fov = focal2fov(gen_c[0, 20])
                     loss_Gmain = 0
                     for i in range(num_opt_steps):
                         batch_renderings = []
                         batch_cams = []
                         gen_c = torch.roll(gen_c, 1, dims=0)
-                        for batch_idx, current_scene in enumerate(gen_result["gaussian_params"]):
-                            extrinsic = gen_c[batch_idx, :16].reshape(4, 4)
-                            intrinsics = torch.tensor([
-                                gen_c[0, 16], 0.0,    0.5,
-                                0.0,    gen_c[0, 20], 0.5,
-                                0.0,    0.0,    1.0
-                            ], device="cuda")
 
-                            render_cam = CustomCam(self.resolution, self.resolution, fovy=fov, fovx=fov, extr=extrinsic)
-                            bg = torch.rand(3, device=gen_z.device)
+                        extrinsic = gen_c[:, :16].reshape(-1, 4, 4)
+                        intrinsics = gen_c[:, 16:25].reshape(-1, 3, 3)
+                        fov = 2 * torch.atan(intrinsics[0, 0, 2] / intrinsics[0, 0, 0])
+
+                        for batch_idx, current_scene in enumerate(gen_result["gaussian_params"]):
+
+                            render_cam = CustomCam(self.resolution, self.resolution, fovy=fov, fovx=fov, extr=extrinsic[batch_idx])
+                            bg = torch.ones(3, device=gen_z.device)
                             ret_dict = self.renderer_gaussian3d.render(gaussian_params=current_scene, viewpoint_camera=render_cam, bg=bg)
                             batch_renderings.append(ret_dict["image"])
-                            batch_cams.append(torch.concat([extrinsic.reshape(-1), intrinsics], dim=0))
+                            batch_cams.append(gen_c[batch_idx])
 
                         renderings = torch.stack(batch_renderings, dim=0)
                         cams = torch.stack(batch_cams, dim=0)
