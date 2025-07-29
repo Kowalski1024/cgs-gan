@@ -195,7 +195,7 @@ class CarsDataset(Dataset):
         self._image_fnames = sorted(
             fname
             for fname in self._all_fnames
-            if self._file_ext(fname) in PIL.Image.EXTENSION
+            if self._file_ext(fname) in PIL.Image.EXTENSION and dataset_type in fname
         )
 
         PIL.Image.init()
@@ -298,6 +298,7 @@ class ImageFolderDataset(Dataset):
         resolution=None,
         camera_sample_mode=None,
         rand_background=True,
+        train=True,
         **super_kwargs,
     ):
         self._path = path

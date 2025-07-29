@@ -107,6 +107,8 @@ def main(**kwargs):
         raise click.ClickException("--cond=True requires labels specified in dataset.json")
     c.training_set_kwargs.use_labels = opts.cond
     c.training_set_kwargs.xflip = opts.mirror
+    c.training_set_kwargs.train = True
+    c.training_set_kwargs.rand_background = False
     c.data_loader_kwargs.num_workers = opts.workers
 
     # Hyperparameters & settings.

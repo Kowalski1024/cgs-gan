@@ -66,6 +66,7 @@ def training_loop(
     training_set_iterator = iter(torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler, batch_size=batch_size // num_gpus, **data_loader_kwargs))
     eval_training_set = dict(training_set_kwargs)
     eval_training_set["rand_background"] = False
+    eval_training_set["train"] = False
     if rank == 0:
         print()
         print('Num images: ', len(training_set))
