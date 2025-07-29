@@ -109,9 +109,6 @@ class Renderer:
         return _rotation
         # return self.rotation_activation(_rotation)
     
-    def get_xyz(self):
-        return self._xyz
-    
     def get_features(self, features_dc, features_rest):
         return torch.cat((features_dc, features_rest), dim=1)
     
@@ -127,6 +124,7 @@ class Renderer:
         scaling_modifier=1.0,
         override_color=None,
         compute_cov3D_python=False,
+        use_rgb=True,
     ):
         _xyz = gaussian_params["_xyz"]
         _features_dc = gaussian_params["_features_dc"]
@@ -187,7 +185,10 @@ class Renderer:
         shs = None
         colors_precomp = None
         if colors_precomp is None:
-            shs = self.get_features(_features_dc, _features_rest)
+            if use_rgb:
+                colors_precomp = _features_dc.squeeze(1)
+            else:
+                shs = self.get_features(_features_dc, _features_rest)
         else:
             colors_precomp = override_color
 
