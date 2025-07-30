@@ -18,7 +18,7 @@ from typing import Union, Iterable
 import torch
 import random
 from collections import deque
-# from pytorch3d.loss import chamfer_distance
+from pytorch3d.loss import chamfer_distance
 import torch.nn.functional as F
 
 from torch.nn.utils.clip_grad import clip_grad_norm_
@@ -140,9 +140,12 @@ class StyleGAN2Loss(Loss):
                     gen_logits = self.run_D(gen_result, gen_c, blur_sigma=blur_sigma)
                     loss_Gmain = torch.nn.functional.softplus(-gen_logits)
 
+
+                ae_point_cloud = gen_result["ae_point_cloud"]
+                self.ae_replay_buffer.push(ae_point_cloud)
+
                 shape_loss = 0
                 if self.coeffs["use_shape_reg"]:
-                    ae_point_cloud = gen_result["ae_point_cloud"]
                     gen_embedding = self.AE.encoder(ae_point_cloud.permute(0, 2, 1))
 
                     w_pdist = torch.pdist(F.normalize(_gen_ws[:, 0, :], p=2, dim=1), p=2)
@@ -170,12 +173,13 @@ class StyleGAN2Loss(Loss):
         if phase in ["AEboth"] and self.coeffs["use_shape_reg"] and len(self.ae_replay_buffer) > 0:
             with torch.autograd.profiler.record_function('AE_forward'):
                 real_point_cloud = self.ae_replay_buffer.sample(batch_size=gen_z.shape[0], device=gen_z.device)
-                ae_output = self.AE(real_point_cloud.permute(0, 2, 1))
-                ae_point_cloud = ae_output["point_cloud"]
-            #     ae_loss, _ = chamfer_distance(real_point_cloud, ae_point_cloud) 
+                ae_point_cloud = self.AE(real_point_cloud.permute(0, 2, 1))
+                ae_loss, _ = chamfer_distance(real_point_cloud, ae_point_cloud)
 
-            # with torch.autograd.profiler.record_function('AE_backward'):
-            #     ae_loss.backward()
+                logger.add("AE loss", "AE_loss", shape_loss)
+
+            with torch.autograd.profiler.record_function('AE_backward'):
+                ae_loss.backward()
 
         # Dmain: Minimize logits for generated images.
         loss_Dgen = 0
