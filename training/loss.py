@@ -56,6 +56,29 @@ class AEReplayBuffer:
 
     def __len__(self):
         return len(self.buffer)
+    
+
+class ContrastiveLoss(torch.nn.Module):
+    def __init__(self, temperature=0.1):
+        super().__init__()
+        self.temperature = temperature
+        self.criterion = torch.nn.CrossEntropyLoss()
+
+    def forward(self, w_features, e_features):
+        B, D = w_features.shape
+
+        w_features = F.normalize(w_features, p=2, dim=1)
+        e_features = F.normalize(e_features, p=2, dim=1)
+
+        sim_matrix = torch.matmul(w_features, e_features.T) / self.temperature
+
+        labels = torch.arange(B, device=w_features.device)
+
+        loss_w_to_e = self.criterion(sim_matrix, labels)
+        loss_e_to_w = self.criterion(sim_matrix.T, labels)
+
+        total_loss = (loss_w_to_e + loss_e_to_w) / 2.0
+        return total_loss
 
 
 class StyleGAN2Loss(Loss):
@@ -76,6 +99,7 @@ class StyleGAN2Loss(Loss):
         self.coeffs = loss_custom_options
         self.renderer_gaussian3d = Renderer(sh_degree=0)
         self.ae_replay_buffer = AEReplayBuffer(capacity=replay_capacity)
+        self.contrastive_loss = ContrastiveLoss(temperature=0.1)
 
     def run_G(self, z, c, resolution, update_emas=False, render_output=True):
         c_gen_conditioning = torch.zeros_like(c)
@@ -145,13 +169,10 @@ class StyleGAN2Loss(Loss):
                 self.ae_replay_buffer.push(ae_point_cloud)
 
                 shape_loss = 0
-                if self.coeffs["use_shape_reg"]:
+                if self.coeffs["use_shape_reg"] and cur_nimg > 5_000:
                     gen_embedding = self.AE.encoder(ae_point_cloud.permute(0, 2, 1))
 
-                    w_pdist = torch.pdist(F.normalize(_gen_ws[:, 0, :], p=2, dim=1), p=2)
-                    embed_pdist = torch.pdist(F.normalize(gen_embedding, p=2, dim=1), p=2)
-
-                    shape_loss = F.mse_loss(embed_pdist, w_pdist)
+                    shape_loss = self.contrastive_loss(_gen_ws[:, 0, :], gen_embedding)
 
                     logger.add("Dist Loss", "Shape", shape_loss)
 
