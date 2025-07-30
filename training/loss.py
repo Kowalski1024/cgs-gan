@@ -153,7 +153,7 @@ class StyleGAN2Loss(Loss):
 
                     shape_loss = F.mse_loss(embed_pdist, w_pdist)
 
-                    logger.add("Shape dist", "shape_dist", shape_loss)
+                    logger.add("Dist Loss", "Shape", shape_loss)
 
                 anchors = gen_result['anchors'][:, :self.G.num_pts]
                 dist = knn_distance(anchors, k=self.coeffs['knn_num_ks']).mean()
@@ -176,7 +176,7 @@ class StyleGAN2Loss(Loss):
                 ae_point_cloud = self.AE(real_point_cloud.permute(0, 2, 1))
                 ae_loss, _ = chamfer_distance(real_point_cloud, ae_point_cloud)
 
-                logger.add("AE loss", "AE_loss", shape_loss)
+                logger.add("Loss", "AE_loss", ae_loss)
 
             with torch.autograd.profiler.record_function('AE_backward'):
                 ae_loss.backward()
