@@ -322,7 +322,7 @@ class PointGenerator(nn.Module):
         output_gaussians.color = output_gaussians.color.view(B, num_points, -1)
         output_gaussians.opacity = output_gaussians.opacity.view(B, num_points, -1)
 
-        output_gaussians.xyz = torch.clamp(output_gaussians.xyz, -0.5, 0.5)
+        output_gaussians.xyz = torch.clamp(output_gaussians.xyz, -0.75, 0.75)
 
         return (
             output_gaussians.xyz,

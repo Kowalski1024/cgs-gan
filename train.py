@@ -132,7 +132,7 @@ def main(**kwargs):
 
     # Base configuration.
     c.ema_kimg = c.batch_size * 10 / 32
-    n_transformer_mapping = {128: 3, 256: 5, 512: 6, 1024: 7, 2048: 8}
+    n_transformer_mapping = {128: 4, 256: 5, 512: 6, 1024: 7, 2048: 8}
 
     # Configuration about the model architecture
     c.G_kwargs.rendering_kwargs = {
