@@ -29,14 +29,19 @@ PARAMETERS_DTYPE = Union[torch.Tensor, Iterable[torch.Tensor]]
 class Loss:
     def accumulate_gradients(self, phase, real_img, real_c, gen_z, gen_c, gain, cur_nimg, logger: CustomLogger): # to be overridden by subclass
         raise NotImplementedError()
+    
+
+class ReplayBuffer:
+    pass
 
 
 class StyleGAN2Loss(Loss):
-    def __init__(self, device, G, D, r1_gamma=10, blur_init_sigma=0, blur_fade_kimg=0, r1_gamma_init=0, r1_gamma_fade_kimg=0, resolution=512, loss_custom_options={}):
+    def __init__(self, device, G, D, AE, r1_gamma=10, blur_init_sigma=0, blur_fade_kimg=0, r1_gamma_init=0, r1_gamma_fade_kimg=0, resolution=512, loss_custom_options={}):
         super().__init__()
         self.device             = device
         self.G                  = G
         self.D                  = D
+        self.AE                 = AE
         self.r1_gamma           = r1_gamma
         self.blur_init_sigma    = blur_init_sigma
         self.blur_fade_kimg     = blur_fade_kimg
@@ -62,6 +67,9 @@ class StyleGAN2Loss(Loss):
                 img['image'] = upfirdn2d.filter2d(img['image'], f / f.sum())
         logits = self.D(img, c, update_emas=update_emas)
         return logits
+    
+    def run_AE(self, decode=False):
+        pass
 
     def accumulate_gradients(self, phase, real_img, real_c, gen_z, gen_c, gain, cur_nimg, logger: CustomLogger):
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']

@@ -195,7 +195,7 @@ class CarsDataset(Dataset):
         self._image_fnames = sorted(
             fname
             for fname in self._all_fnames
-            if self._file_ext(fname) in PIL.Image.EXTENSION and dataset_type in fname
+            if self._file_ext(fname) in PIL.Image.EXTENSION # and dataset_type in fname
         )
 
         PIL.Image.init()
