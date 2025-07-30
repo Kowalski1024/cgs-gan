@@ -413,4 +413,3 @@ class ImageFolderDataset(Dataset):
         for key in cam_labels.keys():
             cam_labels[key] = np.array(cam_labels[key], dtype=np.float32)
         return cam_labels
-

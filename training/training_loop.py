@@ -22,8 +22,10 @@ def training_loop(
         data_loader_kwargs={},      # Options for torch.utils.data.DataLoader.
         G_kwargs={},                # Options for generator network.
         D_kwargs={},                # Options for discriminator network.
+        AE_kwargs={},               # Options for autoencoder network.
         G_opt_kwargs={},            # Options for generator optimizer.
         D_opt_kwargs={},            # Options for discriminator optimizer.
+        AE_opt_kwargs={},           # Options for autoencoder optimizer.
         loss_kwargs={},             # Options for loss function.
         metrics=[],                 # Metrics to evaluate during training.
         random_seed=0,              # Global random seed.
@@ -66,6 +68,7 @@ def training_loop(
     training_set_iterator = iter(torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler, batch_size=batch_size // num_gpus, **data_loader_kwargs))
     eval_training_set = dict(training_set_kwargs)
     eval_training_set["rand_background"] = False
+    eval_training_set["train"] = False
     if rank == 0:
         print()
         print('Num images: ', len(training_set))
@@ -80,6 +83,7 @@ def training_loop(
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device)
     G.register_buffer('dataset_label_std', torch.tensor(training_set.get_label_std()).to(device))
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(device)
+    AE = dnnlib.util.construct_class_by_name(**AE_kwargs).train().requires_grad_(False).to(device)
     G_ema = copy.deepcopy(G).eval()
 
     # Resume from existing pickle.0
@@ -87,7 +91,7 @@ def training_loop(
         print(f'Resuming from "{resume_pkl}"')
         with dnnlib.util.open_url(resume_pkl) as f:
             resume_data = load_network.load_network_pkl(f)
-        for name, module in [('G', G), ('D', D), ('G_ema', G_ema)]:
+        for name, module in [('G', G), ('D', D), ('G_ema', G_ema), ('AE', AE)]:
             misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
 
     # Print network summary tables.
@@ -110,7 +114,7 @@ def training_loop(
     # Distribute across GPUs.
     if rank == 0:
         print(f'Distributing across {num_gpus} GPUs...')
-    for module in [G, D, G_ema]:
+    for module in [G, D, AE, G_ema]:
         if module is not None:
             for param in misc.params_and_buffers(module):
                 if param.numel() > 0 and num_gpus > 1:
@@ -119,9 +123,9 @@ def training_loop(
     # Setup training phases.
     if rank == 0:
         print('Setting up training phases...')
-    loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, **loss_kwargs)  # subclass of training.loss.Loss
+    loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, AE=AE, **loss_kwargs)  # subclass of training.loss.Loss
     phases = []
-    for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]:
+    for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval), ('AE', AE, AE_opt_kwargs, None)]:
         if reg_interval is None:
             if name == "G":
                 model_params, gaussian_params, gaussian_params_names = [], [], []
@@ -212,6 +216,16 @@ def training_loop(
         grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
 
+        out = [G_ema(z=z, c=c, noise_mode='const', random_bg=False)["image"] for z, c in zip(grid_z, grid_c)]
+        images = torch.cat(out).cpu().detach().numpy()
+        torch.cuda.empty_cache()
+        save_image_grid(
+            images, os.path.join(run_dir, 'fakes_init.png'), drange=[-1, 1],
+            grid_size=grid_size, wandb_logger=None
+        )
+
+
+
     # Initialize logs.
     stats_metrics = {}
     logger = CustomLogger()
@@ -228,7 +242,7 @@ def training_loop(
             loss_kwargs=loss_kwargs
         )
         name = run_dir.split("/")[-1]
-        wandb_logger = wandb.init(project="CGS GAN", dir=run_dir, name=name, config=config)
+        wandb_logger = wandb.init(project="CGS GAN", dir=run_dir, name=name, config=config, mode="disabled")
 
     # Train.
     if rank == 0:

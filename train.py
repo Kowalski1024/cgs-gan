@@ -43,6 +43,7 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--cmax",             help="Max. feature maps",                       type=int,   default=512)
 @click.option("--glr",              help="G learning rate",                         type=float, default=0.0025)
 @click.option("--dlr",              help="D learning rate",                         type=float, default=0.002)
+@click.option("--aelr",             help="AE learning rate",                        type=float, default=0.0005)
 @click.option("--map-depth",        help="Mapping network depth ",                  type=int,   default=2)
 @click.option("--mbstd-group",      help="Minibatch std group size",                type=int,   default=4)
 # Misc settings.
@@ -94,11 +95,16 @@ def main(**kwargs):
     c.D_kwargs.channel_max = opts.cmax
     c.D_kwargs.disc_c_noise = opts.disc_c_noise
 
+    # Autoencoder
+    c.AE_kwargs = dnnlib.EasyDict(class_name="training.point_autoencoder.PointAutoEncoder", point_size=opts.gaussian_num_pts, latent_size=128)
+
     # Optimizer
     c.G_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0, 0.99], eps=1e-8)
     c.G_opt_kwargs.lr = opts.glr
     c.D_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0, 0.99], eps=1e-8)
     c.D_opt_kwargs.lr = opts.dlr
+    c.AE_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", eps=1e-8)
+    c.AE_opt_kwargs.lr = opts.aelr
 
     # Training Data
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
@@ -107,6 +113,8 @@ def main(**kwargs):
         raise click.ClickException("--cond=True requires labels specified in dataset.json")
     c.training_set_kwargs.use_labels = opts.cond
     c.training_set_kwargs.xflip = opts.mirror
+    c.training_set_kwargs.train = True
+    c.training_set_kwargs.rand_background = False
     c.data_loader_kwargs.num_workers = opts.workers
 
     # Hyperparameters & settings.

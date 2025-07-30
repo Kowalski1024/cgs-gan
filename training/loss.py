@@ -31,11 +31,12 @@ class Loss:
 
 
 class StyleGAN2Loss(Loss):
-    def __init__(self, device, G, D, r1_gamma=10, blur_init_sigma=0, blur_fade_kimg=0, r1_gamma_init=0, r1_gamma_fade_kimg=0, resolution=512, loss_custom_options={}):
+    def __init__(self, device, G, D, AE, r1_gamma=10, blur_init_sigma=0, blur_fade_kimg=0, r1_gamma_init=0, r1_gamma_fade_kimg=0, resolution=512, loss_custom_options={}):
         super().__init__()
         self.device             = device
         self.G                  = G
         self.D                  = D
+        self.AE                 = AE
         self.r1_gamma           = r1_gamma
         self.blur_init_sigma    = blur_init_sigma
         self.blur_fade_kimg     = blur_fade_kimg
@@ -205,4 +206,3 @@ def knn_distance(pos, k):
     central = central.repeat(1, 1, 1, k) # [B, d, N, k]
 
     return (central - neighbors).square().mean(dim=[1, 3])
-
