@@ -242,7 +242,7 @@ def training_loop(
             loss_kwargs=loss_kwargs
         )
         name = run_dir.split("/")[-1]
-        wandb_logger = wandb.init(project="CGS GAN", dir=run_dir, name=name, config=config, mode="disabled")
+        wandb_logger = wandb.init(project="CGS GAN", dir=run_dir, name=name, config=config)
 
     # Train.
     if rank == 0:
@@ -369,7 +369,7 @@ def training_loop(
         snapshot_data = None
         if done or cur_tick % network_snapshot_ticks == 0:
             snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
-            for name, module in [('G', G), ('D', D), ('G_ema', G_ema)]:
+            for name, module in [('G', G), ('D', D), ('AE', AE), ('G_ema', G_ema)]:
                 if module is not None:
                     if num_gpus > 1:
                         pass

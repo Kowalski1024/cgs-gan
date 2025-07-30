@@ -68,7 +68,7 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--use_multivew_reg", help="compute grad for multiple views",         type=bool,  default=True)
 @click.option("--num_multiview",    help="number of renderings per training step",  type=int,   default=4)
 @click.option("--use_shape_reg",    help="compute distance between point clouds",   type=bool,  default=True)
-@click.option("--shape_loss",       help="loss scale for shape",                    type=int,   default=1)
+@click.option("--shape_loss",       help="loss scale for shape",                    type=float,   default=1.0)
 # Optional job description
 @click.option("--desc",             help="String to include in result dir name",    type=str,   default="cgs_gan")
 @click.option("--job_id",           help="slurm job id",                            type=str,   default="")
@@ -98,7 +98,7 @@ def main(**kwargs):
     c.D_kwargs.disc_c_noise = opts.disc_c_noise
 
     # Autoencoder
-    c.AE_kwargs = dnnlib.EasyDict(class_name="training.point_autoencoder.PointAutoEncoder", point_size=opts.gaussian_num_pts, latent_size=128)
+    c.AE_kwargs = dnnlib.EasyDict(class_name="training.point_autoencoder.PointAutoEncoder", point_size=opts.gaussian_num_pts, latent_size=512)
 
     # Optimizer
     c.G_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0, 0.99], eps=1e-8)
