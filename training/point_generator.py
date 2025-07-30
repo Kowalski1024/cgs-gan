@@ -274,6 +274,7 @@ class PointGenerator(nn.Module):
             color=self.color_init,
             opacity=self.opacity_init,
         )
+        ae_point_cloud = None
 
         output_gaussians = GaussianScene(device=x.device, batch_size=B)
         output_anchors = GaussianScene(device=x.device, batch_size=B)
@@ -295,7 +296,6 @@ class PointGenerator(nn.Module):
                 for key in prev_anchors.keys():
                     prev_anchors[key] = prev_anchors[key].repeat_interleave(self.upsample_ratio[i], dim=1)
 
-
             # generate anchors from features
             if not is_last_layer:
                 current_anchors = EasyDict(**{k: self.anchors[k][i](upsampled_features) for k in ["xyz", "scale", "rotation", "color", "opacity"]})
@@ -314,6 +314,9 @@ class PointGenerator(nn.Module):
                 prev_anchors = current_anchors
             output_gaussians.concat(new_gaussian)
 
+            if is_first_layer:
+                ae_point_cloud = new_gaussian.xyz
+
         # Output phase
         B, num_points, _ = output_gaussians.xyz.shape
         output_gaussians.xyz = output_gaussians.xyz.view(B, num_points, -1)
@@ -322,7 +325,7 @@ class PointGenerator(nn.Module):
         output_gaussians.color = output_gaussians.color.view(B, num_points, -1)
         output_gaussians.opacity = output_gaussians.opacity.view(B, num_points, -1)
 
-        output_gaussians.xyz = torch.clamp(output_gaussians.xyz, -0.5, 0.5)
+        output_gaussians.xyz = torch.clamp(output_gaussians.xyz, -0.75, 0.75)
 
         return (
             output_gaussians.xyz,
@@ -331,6 +334,7 @@ class PointGenerator(nn.Module):
             output_gaussians.color,
             output_gaussians.opacity,
             [output_anchors.xyz, output_anchors.scale, output_anchors.rotation, output_anchors.color, output_anchors.opacity],
+            ae_point_cloud,
         )
 
     def postprocessing_block(self, gaussian: EasyDict, prev_anchor: EasyDict, is_first_anchor=False):

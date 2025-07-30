@@ -16,8 +16,11 @@ from torch_utils.ops import upfirdn2d
 from torch_utils.logger import CustomLogger
 from typing import Union, Iterable
 import torch
+import random
+from collections import deque
+# from pytorch3d.loss import chamfer_distance
+import torch.nn.functional as F
 
-from camera_utils import focal2fov
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from training.gaussian3d_splatting.custom_cam import CustomCam
 from training.gaussian3d_splatting.renderer import Renderer
@@ -28,10 +31,35 @@ PARAMETERS_DTYPE = Union[torch.Tensor, Iterable[torch.Tensor]]
 class Loss:
     def accumulate_gradients(self, phase, real_img, real_c, gen_z, gen_c, gain, cur_nimg, logger: CustomLogger): # to be overridden by subclass
         raise NotImplementedError()
+    
+
+class AEReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, point_clouds):
+        for pc in point_clouds:
+            self.buffer.append(pc.detach().cpu())
+
+    def sample(self, batch_size, device):
+        """
+        Samples a random batch from the buffer and moves it to the specified device.
+        """
+        if len(self.buffer) < batch_size:
+            return None
+        
+        sampled_pcs_list = random.sample(self.buffer, batch_size)
+        
+        sampled_batch = torch.stack(sampled_pcs_list)
+        
+        return sampled_batch.to(device)
+
+    def __len__(self):
+        return len(self.buffer)
 
 
 class StyleGAN2Loss(Loss):
-    def __init__(self, device, G, D, AE, r1_gamma=10, blur_init_sigma=0, blur_fade_kimg=0, r1_gamma_init=0, r1_gamma_fade_kimg=0, resolution=512, loss_custom_options={}):
+    def __init__(self, device, G, D, AE, replay_capacity=64, r1_gamma=10, blur_init_sigma=0, blur_fade_kimg=0, r1_gamma_init=0, r1_gamma_fade_kimg=0, resolution=512, loss_custom_options={}):
         super().__init__()
         self.device             = device
         self.G                  = G
@@ -47,6 +75,7 @@ class StyleGAN2Loss(Loss):
 
         self.coeffs = loss_custom_options
         self.renderer_gaussian3d = Renderer(sh_degree=0)
+        self.ae_replay_buffer = AEReplayBuffer(capacity=replay_capacity)
 
     def run_G(self, z, c, resolution, update_emas=False, render_output=True):
         c_gen_conditioning = torch.zeros_like(c)
@@ -64,7 +93,7 @@ class StyleGAN2Loss(Loss):
         return logits
 
     def accumulate_gradients(self, phase, real_img, real_c, gen_z, gen_c, gain, cur_nimg, logger: CustomLogger):
-        assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
+        assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth', 'AEboth'], f"{phase} not in list"
         if self.G.rendering_kwargs.get('density_reg', 0) == 0:
             phase = {'Greg': 'none', 'Gboth': 'Gmain'}.get(phase, phase)
         if self.r1_gamma == 0:
@@ -111,6 +140,18 @@ class StyleGAN2Loss(Loss):
                     gen_logits = self.run_D(gen_result, gen_c, blur_sigma=blur_sigma)
                     loss_Gmain = torch.nn.functional.softplus(-gen_logits)
 
+                shape_loss = 0
+                if self.coeffs["use_shape_reg"]:
+                    ae_point_cloud = gen_result["ae_point_cloud"]
+                    gen_embedding = self.AE.encoder(ae_point_cloud.permute(0, 2, 1))
+
+                    w_pdist = torch.pdist(F.normalize(_gen_ws[:, 0, :], p=2, dim=1), p=2)
+                    embed_pdist = torch.pdist(F.normalize(gen_embedding, p=2, dim=1), p=2)
+
+                    shape_loss = F.mse_loss(embed_pdist, w_pdist)
+
+                    logger.add("Shape dist", "shape_dist", shape_loss)
+
                 anchors = gen_result['anchors'][:, :self.G.num_pts]
                 dist = knn_distance(anchors, k=self.coeffs['knn_num_ks']).mean()
                 dist_center = anchors.mean(dim=1).square().mean()
@@ -122,8 +163,19 @@ class StyleGAN2Loss(Loss):
                 logger.add("Loss", "G_loss", loss_Gmain)
 
             with torch.autograd.profiler.record_function('Gmain_backward'):
-                ((loss_Gmain).mean().mul(gain) + dist_center.mean() * self.coeffs['center_dists'] + dist * self.coeffs['knn_dists']).backward()
+                ((loss_Gmain).mean().mul(gain) + dist_center.mean() * self.coeffs['center_dists'] + dist * self.coeffs['knn_dists']  + shape_loss * self.coeffs['shape_loss']).backward()
                 clip_grad_norm_(self.G.parameters(), max_norm=20)
+
+        # AEMain
+        if phase in ["AEboth"] and self.coeffs["use_shape_reg"] and len(self.ae_replay_buffer) > 0:
+            with torch.autograd.profiler.record_function('AE_forward'):
+                real_point_cloud = self.ae_replay_buffer.sample(batch_size=gen_z.shape[0], device=gen_z.device)
+                ae_output = self.AE(real_point_cloud.permute(0, 2, 1))
+                ae_point_cloud = ae_output["point_cloud"]
+            #     ae_loss, _ = chamfer_distance(real_point_cloud, ae_point_cloud) 
+
+            # with torch.autograd.profiler.record_function('AE_backward'):
+            #     ae_loss.backward()
 
         # Dmain: Minimize logits for generated images.
         loss_Dgen = 0

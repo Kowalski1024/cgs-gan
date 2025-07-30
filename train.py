@@ -67,6 +67,8 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--knn_num_ks",       help="number of cluster center.",               type=int,   default=64)
 @click.option("--use_multivew_reg", help="compute grad for multiple views",         type=bool,  default=True)
 @click.option("--num_multiview",    help="number of renderings per training step",  type=int,   default=4)
+@click.option("--use_shape_reg",    help="compute distance between point clouds",   type=bool,  default=True)
+@click.option("--shape_loss",       help="loss scale for shape",                    type=int,   default=1)
 # Optional job description
 @click.option("--desc",             help="String to include in result dir name",    type=str,   default="cgs_gan")
 @click.option("--job_id",           help="slurm job id",                            type=str,   default="")
@@ -160,13 +162,16 @@ def main(**kwargs):
     # Loss
     c.loss_kwargs = dnnlib.EasyDict(class_name="training.loss.StyleGAN2Loss")
     c.loss_kwargs.r1_gamma = opts.gamma
+    c.loss_kwargs.replay_capacity = 64
     c.loss_kwargs.loss_custom_options = {
         "knn_dists": opts.knn_dists,                    # coeff. of KNN distance
         "knn_num_ks": opts.knn_num_ks,                  # the number of KNN for calculating loss
         "center_dists": opts.center_dists,              # coeff. of center distance
         "is_resume": True if opts.resume is not None else False,
         "use_multivew_reg": opts.use_multivew_reg,
-        "num_multiview": opts.num_multiview
+        "num_multiview": opts.num_multiview,
+        "use_shape_reg": opts.use_shape_reg,
+        "shape_loss": opts.shape_loss,
     }
     c.loss_kwargs.blur_init_sigma = 10 # Blur the images seen by the discriminator.
     c.loss_kwargs.blur_fade_kimg = c.batch_size * opts.blur_fade_kimg / 32 # Fade out the blur during the first N kimg.
