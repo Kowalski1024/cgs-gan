@@ -59,26 +59,30 @@ class AEReplayBuffer:
     
 
 class ContrastiveLoss(torch.nn.Module):
-    def __init__(self, temperature=0.1):
+    def __init__(self, temperature=0.07):
         super().__init__()
         self.temperature = temperature
         self.criterion = torch.nn.CrossEntropyLoss()
 
-    def forward(self, w_features, e_features):
-        B, D = w_features.shape
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        # Compute similarity matrix
+        similarity_matrix = torch.matmul(features, features.T) / self.temperature
 
-        w_features = F.normalize(w_features, p=2, dim=1)
-        e_features = F.normalize(e_features, p=2, dim=1)
+        # Get batch size
+        batch_size = features.shape[0] // 2
 
-        sim_matrix = torch.matmul(w_features, e_features.T) / self.temperature
+        # Construct labels where each sample's positive pair is in the other view
+        labels = torch.arange(batch_size, device=features.device)
+        labels = torch.cat([labels + batch_size, labels], dim=0)
 
-        labels = torch.arange(B, device=w_features.device)
+        # Mask out self-similarities by setting the diagonal elements to -inf
+        mask = torch.eye(2 * batch_size, dtype=torch.bool, device=features.device)
+        similarity_matrix = similarity_matrix.masked_fill(mask, -float("inf"))
 
-        loss_w_to_e = self.criterion(sim_matrix, labels)
-        loss_e_to_w = self.criterion(sim_matrix.T, labels)
+        # InfoNCE loss
+        loss = F.cross_entropy(similarity_matrix, labels)
 
-        total_loss = (loss_w_to_e + loss_e_to_w) / 2.0
-        return total_loss
+        return loss
 
 
 class StyleGAN2Loss(Loss):
@@ -172,7 +176,7 @@ class StyleGAN2Loss(Loss):
                 if self.coeffs["use_shape_reg"] and cur_nimg > 5_000:
                     gen_embedding = self.AE.encoder(ae_point_cloud.permute(0, 2, 1))
 
-                    shape_loss = self.contrastive_loss(_gen_ws[:, 0, :], gen_embedding)
+                    shape_loss = self.contrastive_loss(gen_embedding)
 
                     logger.add("Dist Loss", "Shape", shape_loss)
 

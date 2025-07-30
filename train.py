@@ -98,7 +98,7 @@ def main(**kwargs):
     c.D_kwargs.disc_c_noise = opts.disc_c_noise
 
     # Autoencoder
-    c.AE_kwargs = dnnlib.EasyDict(class_name="training.point_autoencoder.PointAutoEncoder", point_size=opts.gaussian_num_pts, latent_size=512)
+    c.AE_kwargs = dnnlib.EasyDict(class_name="training.point_autoencoder.PointAutoEncoder", point_size=opts.gaussian_num_pts, latent_size=128)
 
     # Optimizer
     c.G_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0, 0.99], eps=1e-8)
