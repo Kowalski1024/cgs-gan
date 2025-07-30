@@ -30,7 +30,6 @@ class PointAutoEncoder(nn.Module):
         self.dec3 = nn.Linear(256,self.point_size*3)
 
     def encoder(self, x):
-        x = x.permute(0, 2, 1)
         x = self.point_dropout(x)
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
