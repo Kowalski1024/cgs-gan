@@ -173,7 +173,7 @@ class StyleGAN2Loss(Loss):
                 self.ae_replay_buffer.push(ae_point_cloud)
 
                 shape_loss = 0
-                if self.coeffs["use_shape_reg"] and cur_nimg > 5_000:
+                if self.coeffs["use_shape_reg"] and cur_nimg > 1_000:
                     gen_embedding = self.AE.encoder(ae_point_cloud.permute(0, 2, 1))
 
                     shape_loss = self.contrastive_loss(gen_embedding)
