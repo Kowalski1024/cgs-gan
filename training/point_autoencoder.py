@@ -16,6 +16,7 @@ class PointAutoEncoder(nn.Module):
         
         self.latent_size = latent_size
         self.point_size = point_size
+        self.point_dropout = torch.nn.Dropout(p=0.8)
         
         self.conv1 = torch.nn.Conv1d(3, 64, 1)
         self.conv2 = torch.nn.Conv1d(64, 128, 1)
@@ -28,7 +29,9 @@ class PointAutoEncoder(nn.Module):
         self.dec2 = nn.Linear(256,256)
         self.dec3 = nn.Linear(256,self.point_size*3)
 
-    def encoder(self, x): 
+    def encoder(self, x):
+        x = x.permute(0, 2, 1)
+        x = self.point_dropout(x)
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.bn3(self.conv3(x))

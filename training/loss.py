@@ -39,7 +39,8 @@ class AEReplayBuffer:
 
     def push(self, point_clouds):
         for pc in point_clouds:
-            self.buffer.append(pc.detach().cpu())
+            pc = pc.detach().cpu()
+            self.buffer.append(pc)
 
     def sample(self, batch_size, device):
         """
@@ -173,8 +174,8 @@ class StyleGAN2Loss(Loss):
                 self.ae_replay_buffer.push(ae_point_cloud)
 
                 shape_loss = 0
-                if self.coeffs["use_shape_reg"] and cur_nimg > 1_000:
-                    gen_embedding = self.AE.encoder(ae_point_cloud.permute(0, 2, 1))
+                if self.coeffs["use_shape_reg"] and cur_nimg > 5_000:
+                    gen_embedding = self.AE.encoder(ae_point_cloud)
 
                     shape_loss = self.contrastive_loss(gen_embedding)
 
@@ -198,7 +199,7 @@ class StyleGAN2Loss(Loss):
         if phase in ["AEboth"] and self.coeffs["use_shape_reg"] and len(self.ae_replay_buffer) > 0:
             with torch.autograd.profiler.record_function('AE_forward'):
                 real_point_cloud = self.ae_replay_buffer.sample(batch_size=gen_z.shape[0], device=gen_z.device)
-                ae_point_cloud = self.AE(real_point_cloud.permute(0, 2, 1))
+                ae_point_cloud = self.AE(real_point_cloud)
                 ae_loss, _ = chamfer_distance(real_point_cloud, ae_point_cloud)
 
                 logger.add("Loss", "AE_loss", ae_loss)
