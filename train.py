@@ -162,7 +162,7 @@ def main(**kwargs):
     # Loss
     c.loss_kwargs = dnnlib.EasyDict(class_name="training.loss.StyleGAN2Loss")
     c.loss_kwargs.r1_gamma = opts.gamma
-    c.loss_kwargs.replay_capacity = 64
+    c.loss_kwargs.replay_capacity = 800
     c.loss_kwargs.loss_custom_options = {
         "knn_dists": opts.knn_dists,                    # coeff. of KNN distance
         "knn_num_ks": opts.knn_num_ks,                  # the number of KNN for calculating loss
