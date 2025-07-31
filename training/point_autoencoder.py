@@ -45,7 +45,7 @@ class PointAutoEncoder(nn.Module):
         self.sigma = sigma
         self.clip = clip
 
-        self.dropout = torch.nn.Dropout(0.5)
+        self.dropout = torch.nn.Dropout(0.8)
         
         self.conv1 = torch.nn.Conv1d(3, 64, 1)
         self.conv2 = torch.nn.Conv1d(64, 128, 1)

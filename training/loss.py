@@ -62,27 +62,15 @@ class AEReplayBuffer:
 class ContrastiveLoss(torch.nn.Module):
     def __init__(self, temperature=0.07):
         super().__init__()
-        self.temperature = temperature
-        self.criterion = torch.nn.CrossEntropyLoss()
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        # Compute similarity matrix
-        similarity_matrix = torch.matmul(features, features.T) / self.temperature
+    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
+        embeddings_norm = F.normalize(embeddings, p=2, dim=1)
 
-        # Get batch size
-        batch_size = features.shape[0] // 2
+        cos_sim_matrix = torch.matmul(embeddings_norm, embeddings_norm.t())
+        n = embeddings.shape[0]
 
-        # Construct labels where each sample's positive pair is in the other view
-        labels = torch.arange(batch_size, device=features.device)
-        labels = torch.cat([labels + batch_size, labels], dim=0)
-
-        # Mask out self-similarities by setting the diagonal elements to -inf
-        mask = torch.eye(2 * batch_size, dtype=torch.bool, device=features.device)
-        similarity_matrix = similarity_matrix.masked_fill(mask, -float("inf"))
-
-        # InfoNCE loss
-        loss = F.cross_entropy(similarity_matrix, labels)
-
+        loss = (cos_sim_matrix - torch.eye(n, device=embeddings.device)).pow(2).sum() / (n * (n - 1))
+    
         return loss
 
 
