@@ -82,9 +82,7 @@ class CGSGenerator(torch.nn.Module):
             gaussian_params.append(gaussian_params_i)
 
             if render_output:
-                fovx = focal2fov(focalx[batch_idx])
-                fovy = focal2fov(focaly[batch_idx])
-                cur_cam = CustomCam(resolution, resolution, fovy=fovy, fovx=fovx, extr=cam2world_matrix[batch_idx])
+                cur_cam = CustomCam(resolution, resolution, fovy=fovx, fovx=fovy, extr=cam2world_matrix[batch_idx])
                 if random_bg:
                     bg = torch.rand(3, device=ws.device)
                 else:

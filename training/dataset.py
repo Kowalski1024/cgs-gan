@@ -258,8 +258,9 @@ class CarsDataset(Dataset):
             #     intrinsics = np.loadtxt(f) / 512.0
             #     intrinsics[-1] = 1.0
             intrinsics = (
-                np.array([525.0, 0.0, 256.0, 0.0, 525.0, 256.0, 0.0, 0.0, 1.0]) / 512.0
+                np.array([131.25, 0.0, 64.0, 0.0, 131.25, 64.0, 0.0, 0.0, 1.0])
             )
+            intrinsics[-1] = 1.0
             labels.append(np.concatenate((pose, intrinsics)))
         labels = np.array(labels, dtype=np.float32)
         return labels

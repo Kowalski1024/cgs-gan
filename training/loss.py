@@ -148,11 +148,12 @@ class StyleGAN2Loss(Loss):
 
                         extrinsic = gen_c[:, :16].reshape(-1, 4, 4)
                         intrinsics = gen_c[:, 16:25].reshape(-1, 3, 3)
-                        fov = 2 * torch.atan(intrinsics[0, 0, 2] / intrinsics[0, 0, 0])
+                        fovx = 2 * torch.atan(intrinsics[0, 0, 2] / intrinsics[0, 0, 0])
+                        fovy = 2 * torch.atan(intrinsics[0, 1, 2] / intrinsics[0, 1, 1])
 
                         for batch_idx, current_scene in enumerate(gen_result["gaussian_params"]):
 
-                            render_cam = CustomCam(self.resolution, self.resolution, fovy=fov, fovx=fov, extr=extrinsic[batch_idx])
+                            render_cam = CustomCam(self.resolution, self.resolution, fovy=fovx, fovx=fovy, extr=extrinsic[batch_idx])
                             bg = torch.ones(3, device=gen_z.device)
                             ret_dict = self.renderer_gaussian3d.render(gaussian_params=current_scene, viewpoint_camera=render_cam, bg=bg)
                             batch_renderings.append(ret_dict["image"])
