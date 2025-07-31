@@ -9,13 +9,43 @@ Learning Representations and Generative Models For 3D Point Clouds
 https://arxiv.org/abs/1707.02392
 '''
 
+def jitter_point_cloud(pc_batch, sigma=0.01, clip=0.05):
+    """
+    Randomly jitters a batch of point clouds.
+
+    Args:
+        pc_batch (torch.Tensor): The batch of point clouds to jitter, 
+                                 shape (B, 3, N).
+        sigma (float): The standard deviation of the Gaussian noise to add.
+        clip (float): The maximum absolute value for the noise. This prevents
+                      adding outlier noise.
+
+    Returns:
+        torch.Tensor: The jittered point cloud batch.
+    """
+    B, C, N = pc_batch.shape
+    assert(C == 3)
+
+    noise = torch.randn(B, C, N, device=pc_batch.device) * sigma
+
+    clipped_noise = torch.clamp(noise, -clip, clip)
+
+    jittered_pc = pc_batch + clipped_noise
+    
+    return jittered_pc
+
+
 @persistence.persistent_class
 class PointAutoEncoder(nn.Module):
-    def __init__(self, point_size, latent_size):
+    def __init__(self, point_size, latent_size, sigma=0.01, clip=0.03):
         super().__init__()
         
         self.latent_size = latent_size
         self.point_size = point_size
+        self.sigma = sigma
+        self.clip = clip
+
+        self.dropout = torch.nn.Dropout(0.5)
         
         self.conv1 = torch.nn.Conv1d(3, 64, 1)
         self.conv2 = torch.nn.Conv1d(64, 128, 1)
@@ -28,7 +58,10 @@ class PointAutoEncoder(nn.Module):
         self.dec2 = nn.Linear(256,256)
         self.dec3 = nn.Linear(256,self.point_size*3)
 
-    def encoder(self, x): 
+    def encoder(self, x):
+        x = jitter_point_cloud(x, self.sigma, self.clip)
+        x = self.dropout(x)
+
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.bn3(self.conv3(x))
