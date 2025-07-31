@@ -58,7 +58,8 @@ class CGSGenerator(torch.nn.Module):
         else:
             self.resolution = resolution
 
-        focalx, focaly, near, far = intrinsics[:, 0,0], intrinsics[:, 1,1], 0.1, 10
+        fovx = 2 * torch.atan(intrinsics[0, 0, 2] / intrinsics[0, 0, 0])
+        fovy = 2 * torch.atan(intrinsics[0, 1, 2] / intrinsics[0, 1, 1])
 
         sample_coordinates = torch.tanh(self._xyz.unsqueeze(0).repeat(len(ws), 1, 1))
         sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity, anchors, ae_point_cloud = self.point_gen(sample_coordinates, ws)
