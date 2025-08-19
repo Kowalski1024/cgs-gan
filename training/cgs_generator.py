@@ -12,7 +12,6 @@ import torch
 from camera_utils import focal2fov
 from torch_utils import persistence
 from training.gaussian3d_splatting.custom_cam import CustomCam
-from training.gaussian3d_splatting.camera import extract_cameras
 from training.networks_stylegan2 import MappingNetwork
 from training.gaussian3d_splatting.renderer import Renderer
 
@@ -45,8 +44,6 @@ class CGSGenerator(torch.nn.Module):
         self.custom_options = rendering_kwargs['custom_options']
 
         self.num_pts = self.custom_options['num_pts']
-        random_coords = torch.randn((self.num_pts, 3))
-        self._xyz = torch.nn.Parameter(random_coords * torch.rsqrt(torch.mean(random_coords ** 2, dim=1, keepdim=True) + 1e-8) * 0.5 * 0.6)
         self.point_gen = PointGenerator(w_dim=w_dim, options=self.custom_options)
         self.renderer_gaussian3d = Renderer(sh_degree=0)
         self.mapping_network = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.point_gen.num_ws + 1, **mapping_kwargs)
@@ -87,11 +84,10 @@ class CGSGenerator(torch.nn.Module):
         else:
             self.resolution = resolution
 
-        cameras = extract_cameras(cam2world_matrix, intrinsics, self.resolution)
+        fovx = 2 * torch.atan(intrinsics[0, 0, 2] / intrinsics[0, 0, 0])
+        fovy = 2 * torch.atan(intrinsics[0, 1, 2] / intrinsics[0, 1, 1])
 
-        focalx, focaly, near, far = intrinsics[:, 0,0], intrinsics[:, 1,1], 0.1, 10
-
-        pos, batch = self.sphere, None
+        pos = self.sphere
         edge_index = SparseTensor.from_edge_index(self.edge_index)
         encoded_pos = self.encoder(pos)
 
@@ -116,7 +112,7 @@ class CGSGenerator(torch.nn.Module):
             gaussian_params.append(gaussian_params_i)
 
             if render_output:
-                cur_cam = cameras[batch_idx]
+                cur_cam = CustomCam(resolution, resolution, fovy=fovx, fovx=fovy, extr=cam2world_matrix[batch_idx])
                 bg = torch.ones(3, device=ws.device)
                 ret_dict = self.renderer_gaussian3d.render(gaussian_params_i, cur_cam, bg=bg)
                 rendered_images.append(ret_dict["image"].unsqueeze(0))
