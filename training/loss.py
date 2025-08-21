@@ -108,7 +108,7 @@ class StyleGAN2Loss(Loss):
                     loss_Gmain /= num_opt_steps
                 else:
                     # normal pass
-                    gen_result, _gen_ws = self.run_G(gen_z, gen_c, resolution=self.resolution, random_bg=self.random_bg)
+                    gen_result, _gen_ws = self.run_G(gen_z, gen_c, resolution=self.resolution)
                     gen_logits = self.run_D(gen_result, gen_c, blur_sigma=blur_sigma)
                     loss_Gmain = torch.nn.functional.softplus(-gen_logits)
 
