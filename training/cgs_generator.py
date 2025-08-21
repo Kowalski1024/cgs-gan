@@ -9,16 +9,13 @@
 # its affiliates is strictly prohibited.
 import torch
 
-from camera_utils import focal2fov
 from torch_utils import persistence
 from training.gaussian3d_splatting.custom_cam import CustomCam
-from training.gaussian3d_splatting.camera import extract_cameras
 from training.networks_stylegan2 import MappingNetwork
 from training.gaussian3d_splatting.renderer import Renderer
 
-from training.gnn_point_generator import PointGenerator
+from training.gnn_point_generator_v2 import PointGenerator
 from torch_sparse import SparseTensor
-from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
 import rff
 
@@ -45,18 +42,16 @@ class CGSGenerator(torch.nn.Module):
         self.custom_options = rendering_kwargs['custom_options']
 
         self.num_pts = self.custom_options['num_pts']
-        random_coords = torch.randn((self.num_pts, 3))
-        self._xyz = torch.nn.Parameter(random_coords * torch.rsqrt(torch.mean(random_coords ** 2, dim=1, keepdim=True) + 1e-8) * 0.5 * 0.6)
         self.point_gen = PointGenerator(w_dim=w_dim, options=self.custom_options)
         self.renderer_gaussian3d = Renderer(sh_degree=0)
-        self.mapping_network = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.point_gen.num_ws + 1, **mapping_kwargs)
+        self.mapping_network = MappingNetwork(z_dim=z_dim + 3, c_dim=0, w_dim=w_dim, num_ws=None, **mapping_kwargs)
 
         self.encoder = rff.layers.GaussianEncoding(
             sigma=10.0, input_size=3, encoded_size=128 // 2
         )
 
         self.register_buffer("sphere", self._fibonacci_sphere(self.num_pts, 1.0))
-        self.register_buffer("edge_index", knn_graph(self.sphere, k=6, batch=None))
+        self.register_buffer("edge_index", knn_graph(self.sphere, k=6, batch=None, loop=True))
 
     @staticmethod
     def _fibonacci_sphere(samples=1000, scale=1.0):
@@ -76,7 +71,16 @@ class CGSGenerator(torch.nn.Module):
         return points * scale
 
     def mapping(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
-        return self.mapping_network(z, torch.zeros_like(c), truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
+        batch_size = z.size(0)
+        num_pts = self.num_pts
+
+        sphere = self.sphere
+        sphere = sphere.unsqueeze(0).expand(batch_size, -1, -1)
+        z = z.unsqueeze(1).expand(-1, num_pts, -1)
+
+        mapping_input = torch.cat([z, sphere], dim=-1)
+
+        return self.mapping_network(mapping_input, None, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
 
     def synthesis(self, ws, c, resolution=None, update_emas=False, gs_params=None, random_bg=True, render_output=True, **synthesis_kwargs):
         cam2world_matrix = c[:, :16].view(-1, 4, 4)
@@ -87,11 +91,10 @@ class CGSGenerator(torch.nn.Module):
         else:
             self.resolution = resolution
 
-        cameras = extract_cameras(cam2world_matrix, intrinsics, self.resolution)
+        fovx = 2 * torch.atan(intrinsics[:, 0, 2] / intrinsics[:, 0, 0])
+        fovy = 2 * torch.atan(intrinsics[:, 1, 2] / intrinsics[:, 1, 1])
 
-        focalx, focaly, near, far = intrinsics[:, 0,0], intrinsics[:, 1,1], 0.1, 10
-
-        pos, batch = self.sphere, None
+        pos = self.sphere
         edge_index = SparseTensor.from_edge_index(self.edge_index)
         encoded_pos = self.encoder(pos)
 
@@ -116,7 +119,7 @@ class CGSGenerator(torch.nn.Module):
             gaussian_params.append(gaussian_params_i)
 
             if render_output:
-                cur_cam = cameras[batch_idx]
+                cur_cam = CustomCam(resolution, resolution, fovy=fovx[batch_idx], fovx=fovy[batch_idx], extr=cam2world_matrix[batch_idx])
                 bg = torch.ones(3, device=ws.device)
                 ret_dict = self.renderer_gaussian3d.render(gaussian_params_i, cur_cam, bg=bg)
                 rendered_images.append(ret_dict["image"].unsqueeze(0))

@@ -246,7 +246,7 @@ class MappingNetwork(torch.nn.Module):
         x = None
         with torch.autograd.profiler.record_function('input'):
             if self.z_dim > 0:
-                misc.assert_shape(z, [None, self.z_dim])
+                # misc.assert_shape(z, [None, self.z_dim])
                 x = normalize_2nd_moment(z.to(torch.float32))
             if self.c_dim > 0:
                 misc.assert_shape(c, [None, self.c_dim])
@@ -259,9 +259,9 @@ class MappingNetwork(torch.nn.Module):
             x = layer(x)
 
         # Update moving average of W.
-        if update_emas and self.w_avg_beta is not None:
-            with torch.autograd.profiler.record_function('update_w_avg'):
-                self.w_avg.copy_(x.detach().mean(dim=0).lerp(self.w_avg, self.w_avg_beta))
+        # if update_emas and self.w_avg_beta is not None:
+        #     with torch.autograd.profiler.record_function('update_w_avg'):
+        #         self.w_avg.copy_(x.detach().mean(dim=0).lerp(self.w_avg, self.w_avg_beta))
 
         # Broadcast.
         if self.num_ws is not None:
@@ -269,13 +269,13 @@ class MappingNetwork(torch.nn.Module):
                 x = x.unsqueeze(1).repeat([1, self.num_ws, 1])
 
         # Apply truncation.
-        if truncation_psi != 1:
-            with torch.autograd.profiler.record_function('truncate'):
-                assert self.w_avg_beta is not None
-                if self.num_ws is None or truncation_cutoff is None:
-                    x = self.w_avg.lerp(x, truncation_psi)
-                else:
-                    x[:, :truncation_cutoff] = self.w_avg.lerp(x[:, :truncation_cutoff], truncation_psi)
+        # if truncation_psi != 1:
+        #     with torch.autograd.profiler.record_function('truncate'):
+        #         assert self.w_avg_beta is not None
+        #         if self.num_ws is None or truncation_cutoff is None:
+        #             x = self.w_avg.lerp(x, truncation_psi)
+        #         else:
+        #             x[:, :truncation_cutoff] = self.w_avg.lerp(x[:, :truncation_cutoff], truncation_psi)
         return x
 
     def extra_repr(self):

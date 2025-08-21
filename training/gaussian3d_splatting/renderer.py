@@ -101,20 +101,17 @@ class Renderer:
         self.max_sh_degree = 0
         
     def get_scaling(self, _scaling):
-        return _scaling
-        # scales = self.scaling_activation(_scaling)
-        # return torch.clamp(scales, min=1e-4, max=0.03)
+        scales = self.scaling_activation(_scaling - 4.0)
+        return torch.clamp(scales, min=1e-4, max=0.03)
     
     def get_rotation(self, _rotation):
-        return _rotation
-        # return self.rotation_activation(_rotation)
+        return self.rotation_activation(_rotation)
     
     def get_features(self, features_dc, features_rest):
         return torch.cat((features_dc, features_rest), dim=1)
     
     def get_opacity(self, _opacity):
-        return _opacity
-        # return self.opacity_activation(_opacity)
+        return self.opacity_activation(_opacity)
 
     def render(
         self,
