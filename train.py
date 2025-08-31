@@ -102,7 +102,7 @@ def main(**kwargs):
 
     # Training Data
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
-    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name="training.dataset.CarsDataset", data=opts.data, cam_sample_mode=opts.cam_sample_mode)
+    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name="training.dataset.ImageFolderDataset", data=opts.data, cam_sample_mode=opts.cam_sample_mode)
     if opts.cond and not c.training_set_kwargs.use_labels:
         raise click.ClickException("--cond=True requires labels specified in dataset.json")
     c.training_set_kwargs.use_labels = opts.cond
@@ -159,7 +159,7 @@ def main(**kwargs):
         "knn_dists": opts.knn_dists,                    # coeff. of KNN distance
         "knn_num_ks": opts.knn_num_ks,                  # the number of KNN for calculating loss
         "center_dists": opts.center_dists,              # coeff. of center distance
-        "position_reg": 1.0,
+        "position_reg": 0.0,
         "is_resume": True if opts.resume is not None else False,
         "use_multivew_reg": opts.use_multivew_reg,
         "num_multiview": opts.num_multiview

@@ -24,7 +24,7 @@ class GaussianDecoder(nn.Module):
         self,
         feature_channels,
         in_channels,
-        hidden_channles=128,
+        hidden_channles=256,
         use_rgb=True,
         use_pc=True,
     ):
@@ -47,8 +47,8 @@ class GaussianDecoder(nn.Module):
             layer = nn.Linear(hidden_channles, channels)
 
             if key == "scaling":
-                # torch.nn.init.constant_(layer.bias, -5.0)
-                self.scaling_modulator = nn.Linear(hidden_channles, 3)
+                torch.nn.init.constant_(layer.bias, -5.0)
+                # self.scaling_modulator = nn.Linear(hidden_channles, 3)
             elif key == "rotation":
                 torch.nn.init.constant_(layer.bias, 0)
                 torch.nn.init.constant_(layer.bias[0], 1.0)
@@ -63,11 +63,12 @@ class GaussianDecoder(nn.Module):
         ret = {}
         for k, layer in zip(self.feature_channels.keys(), self.decoders):
             v = layer(x)
+            # v = torch.tanh(v * 0.05) * 20
             if k == "rotation":
                 v = torch.nn.functional.normalize(v, dim=-1)
             elif k == "scaling":
-                scale_base = trunc_exp(v - 4.0)
-                scale_base = torch.clamp(scale_base, min=1e-4, max=0.03)
+                scale_base = trunc_exp(v)
+                scale_base = torch.clamp(scale_base, min=0.0, max=0.03)
 
                 # modulator = self.scaling_modulator(x)
                 v = scale_base # * torch.sigmoid(modulator)
@@ -83,9 +84,12 @@ class GaussianDecoder(nn.Module):
             elif k == "opacity":
                 v = torch.sigmoid(v)
             elif k == "shs":
-                pass
+                v = torch.tanh(v) * 1.1
+                v = (v + 1.0) * 0.5
             elif k == "xyz":
-                v = pc
+                max_step = 1.2 / 32
+                v = (torch.sigmoid(v) - 0.5) * max_step
+                v = v + pc
             ret[k] = v
 
         return ret
