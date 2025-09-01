@@ -68,7 +68,7 @@ class GaussianDecoder(nn.Module):
                 v = torch.nn.functional.normalize(v, dim=-1)
             elif k == "scaling":
                 scale_base = trunc_exp(v)
-                scale_base = torch.clamp(scale_base, min=0.0, max=0.03)
+                scale_base = torch.clamp(scale_base, min=1e-4, max=0.03)
 
                 # modulator = self.scaling_modulator(x)
                 v = scale_base # * torch.sigmoid(modulator)
