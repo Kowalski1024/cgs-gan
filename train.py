@@ -66,6 +66,7 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--knn_num_ks",       help="number of cluster center.",               type=int,   default=64)
 @click.option("--use_multivew_reg", help="compute grad for multiple views",         type=bool,  default=True)
 @click.option("--num_multiview",    help="number of renderings per training step",  type=int,   default=4)
+@click.option("--position_reg",      help="Strength of position regularization",     type=float, default=0.0)
 # Optional job description
 @click.option("--desc",             help="String to include in result dir name",    type=str,   default="cgs_gan")
 @click.option("--job_id",           help="slurm job id",                            type=str,   default="")
@@ -159,7 +160,7 @@ def main(**kwargs):
         "knn_dists": opts.knn_dists,                    # coeff. of KNN distance
         "knn_num_ks": opts.knn_num_ks,                  # the number of KNN for calculating loss
         "center_dists": opts.center_dists,              # coeff. of center distance
-        "position_reg": 0.0,
+        "position_reg": opts.position_reg,
         "is_resume": True if opts.resume is not None else False,
         "use_multivew_reg": opts.use_multivew_reg,
         "num_multiview": opts.num_multiview
