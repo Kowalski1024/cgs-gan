@@ -193,7 +193,7 @@ class CarsDataset(Dataset):
         self._image_fnames = sorted(
             fname
             for fname in self._all_fnames
-            if self._file_ext(fname) in PIL.Image.EXTENSION # and dataset_type in fname
+            if self._file_ext(fname) in PIL.Image.EXTENSION and dataset_type in fname
         )
 
         PIL.Image.init()
@@ -258,8 +258,9 @@ class CarsDataset(Dataset):
             #     intrinsics = np.loadtxt(f) / 512.0
             #     intrinsics[-1] = 1.0
             intrinsics = (
-                np.array([525.0, 0.0, 256.0, 0.0, 525.0, 256.0, 0.0, 0.0, 1.0]) / 512.0
+                np.array([131.25, 0.0, 64.0, 0.0, 131.25, 64.0, 0.0, 0.0, 1.0])
             )
+            intrinsics[-1] = 1.0
             labels.append(np.concatenate((pose, intrinsics)))
         labels = np.array(labels, dtype=np.float32)
         return labels
@@ -413,4 +414,3 @@ class ImageFolderDataset(Dataset):
         for key in cam_labels.keys():
             cam_labels[key] = np.array(cam_labels[key], dtype=np.float32)
         return cam_labels
-
