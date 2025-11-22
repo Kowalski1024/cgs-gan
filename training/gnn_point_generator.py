@@ -1,19 +1,27 @@
 import torch
 from torch import nn
-from torch_geometric.nn import PointGNNConv, global_max_pool
+from torch_geometric.nn import global_max_pool, SAGEConv
 import numpy as np
 import math
 from torch import Tensor
-from torch.nn import BatchNorm1d
-from torch_geometric.nn.models import MLP
 from torch_geometric.typing import Adj, OptTensor
 from torch_geometric import nn as gnn
 from torch_geometric.nn.inits import reset
 from itertools import pairwise
-from torch_geometric.nn.models.linkx import SparseLinear
 from torch_geometric.utils import spmm
 from dnnlib import EasyDict
 from training.gaussian import GaussianDecoder
+
+
+class RMSNorm(torch.nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.scale = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        norm = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return norm * self.scale
 
 
 def fmm_modulate_linear(
@@ -120,61 +128,26 @@ class LINKX(torch.nn.Module):
 
     def __init__(
         self,
-        num_nodes: int,
         in_channels: int,
         hidden_channels: int,
         out_channels: int,
         num_layers: int,
         w_dim: int,
-        num_edge_layers: int = 1,
-        num_node_layers: int = 1,
         dropout: float = 0.0,
     ):
         super().__init__()
 
-        self.num_nodes = num_nodes
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.num_edge_layers = num_edge_layers
         self.num_layers = num_layers
 
-        self.edge_lin = SparseLinear(num_nodes, hidden_channels)
-
-        if self.num_edge_layers > 1:
-            self.edge_norm = BatchNorm1d(hidden_channels)
-            channels = [hidden_channels] * num_edge_layers
-            self.edge_mlp = MLP(channels, dropout=0.0, act_first=True, act="leakyrelu")
-        else:
-            self.edge_norm = None
-            self.edge_mlp = None
-
-        self.linear_edge = SynthesisLayer(hidden_channels, hidden_channels, w_dim)
-
-        channels = [in_channels] + [hidden_channels] * num_node_layers
-        self.node_mlp = MLP(channels, dropout=0.0, act_first=True, act="leakyrelu")
-
-        self.cat_lin1 = torch.nn.Linear(hidden_channels, hidden_channels)
-        self.cat_lin2 = torch.nn.Linear(hidden_channels, hidden_channels)
+        self.conv = SAGEConv(in_channels, hidden_channels)
+        self.act = nn.LeakyReLU(inplace=True)
 
         channels = [hidden_channels] * num_layers + [out_channels]
         self.final_mlp = nn.ModuleList()
         for channel_in, channel_out in pairwise(channels):
             self.final_mlp.append(SynthesisLayer(channel_in, channel_out, w_dim))
-
-        self.leakyrelu = nn.LeakyReLU(inplace=True)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        r"""Resets all learnable parameters of the module."""
-        self.edge_lin.reset_parameters()
-        if self.edge_norm is not None:
-            self.edge_norm.reset_parameters()
-        if self.edge_mlp is not None:
-            self.edge_mlp.reset_parameters()
-        self.node_mlp.reset_parameters()
-        self.cat_lin1.reset_parameters()
-        self.cat_lin2.reset_parameters()
 
     def forward(
         self,
@@ -183,24 +156,15 @@ class LINKX(torch.nn.Module):
         w=None,
     ) -> Tensor:
         """"""  # noqa: D419
-        out = self.edge_lin(edge_index)
-        out = self.linear_edge(out, w)
+        out = self.conv(x, edge_index)
+        out = self.act(out)
 
-        out = out + self.cat_lin1(out)
-
-        if x is not None:
-            x = self.node_mlp(x)
-            out = out + x
-            out = out + self.cat_lin2(x)
-
-        out = self.leakyrelu(out)
         for i, layer in enumerate(self.final_mlp):
             out = layer(out, w)
         return out
 
     def extra_repr(self):
         return (
-            f"num_nodes={self.num_nodes}, "
             f"layers={self.num_layers}, "
             f"in_channels={self.in_channels}, "
             f"out_channels={self.out_channels}"
@@ -372,7 +336,7 @@ class PointGNNConv(gnn.MessagePassing):
         self.mlp_g = nn.ModuleList(
             [
                 SynthesisLayer(channels + 3, channels, z_dim),
-                SynthesisLayer(channels, channels, z_dim),
+                SynthesisLayer(channels, channels, z_dim, activation=nn.Identity()),
             ]
         )
         self.edge_scale = nn.Parameter(torch.ones(channels) * 0.01)
@@ -419,28 +383,29 @@ class CloudGenerator(nn.Module):
 
         self.global_conv = nn.Sequential(
             nn.Linear(channels, channels),
-            nn.LeakyReLU(inplace=True),
-            nn.Linear(channels, channels),
+            RMSNorm(channels),
             nn.LeakyReLU(inplace=True),
         )
 
         self.tail = nn.Sequential(
             nn.Linear(channels // 2, 3),
         )
-        nn.init.normal_(self.tail[0].weight, std=0.01)
+        nn.init.normal_(self.tail[0].weight, std=0.001)
         nn.init.zeros_(self.tail[0].bias)
 
         self.synthetic_block1 = PointGNNConv(128, 128, z_dim)
         self.synthetic_block2 = PointGNNConv(128, 128, z_dim)
         # self.synthetic_block3 = PointGNNConv(128, 128, z_dim)
         # self.synthetic_block8 = PointGNNConv(128, 128, z_dim)
-        self.synthetic_block4 = LINKX(num_pts, 256, 256, 256, 2, z_dim)
-        self.synthetic_block5 = LINKX(num_pts, 256, 256, 256, 2, z_dim)
+        self.synthetic_block4 = LINKX(256, 256, 256, 2, z_dim)
+        self.synthetic_block5 = LINKX(256, 256, 256, 2, z_dim)
         # self.synthetic_block6 = LINKX(POINTS, 256, 256, 256, 2, z_dim)
         # self.synthetic_block7 = LINKX(POINTS, 256, 256, 256, 2, z_dim)
 
         self.layer_1 = SynthesisLayer(channels * 2, channels, z_dim, noise=False)
+        self.norm1 = RMSNorm(channels)
         self.layer_2 = SynthesisLayer(channels, channels // 2, z_dim, noise=False)
+        self.norm2 = RMSNorm(channels // 2)
 
     def forward(self, pos, x, edge_index, batch, w):
         x = self.synthetic_block1(x, pos, edge_index, w[0])
@@ -454,7 +419,9 @@ class CloudGenerator(nn.Module):
 
         x = torch.cat([x, h], dim=-1)
         new_pos = self.layer_1(x, w[0])
+        new_pos = self.norm1(new_pos)
         new_pos = self.layer_2(new_pos, w[0])
+        new_pos = self.norm2(new_pos)
         new_pos = self.tail(new_pos) * self.pos_scale + self.pos_offset
         x = x.detach()
         pre_feat = x
