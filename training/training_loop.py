@@ -324,7 +324,7 @@ def training_loop(
         batch_idx += 1
 
         if rank == 0 and (batch_idx - 1) % 10 == 0:
-            print(f"  kimg {cur_nimg / 1e3:<8.3f} G_loss: {logger.content.get('Loss/G_loss', 0):.4f}  D_loss: {logger.content.get('Loss/D_loss', 0):.4f}  Aniso: {logger.content.get('Geometry/anisotropy', 0):.2f}  Disp: {logger.content.get('Geometry/displacement', 0):.2f}  Dead: {logger.content.get('Geometry/dead_gaussians', 0):.2%}, Logit_Spread: {logger.content.get('Scores/logit_spread', 0):.4f}, G_grad: {logger.content.get('Gradients/Gboth_grad_norm', 0):.4f}  D_grad: {logger.content.get('Gradients/Dmain_grad_norm', 0):.4f}")
+            print(f"  kimg {cur_nimg / 1e3:<8.3f} G_loss: {logger.content.get('Loss/G_loss', 0):.4f}  D_loss: {logger.content.get('Loss/D_loss', 0):.4f}  Aniso: {logger.content.get('Geometry/anisotropy', 0):.2f}  Disp: {logger.content.get('Geometry/displacement', 0):.2f}  Dead: {logger.content.get('Geometry/dead_gaussians', 0):.2%}, Logit_Spread: {logger.content.get('Scores/logit_spread', 0):.4f}, G_grad: {logger.content.get('Gradients/Gboth_grad_norm', 0):.4f}  D_grad: {logger.content.get('Gradients/Dmain_grad_norm', 0):.4f}, D_reg_grad: {logger.content.get('Gradients/Dreg_grad_norm', 0):.4f}")
 
         # Perform maintenance tasks once per tick.
         done = (cur_nimg >= total_kimg * 1000)

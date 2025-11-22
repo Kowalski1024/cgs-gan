@@ -428,6 +428,8 @@ class CloudGenerator(nn.Module):
             nn.Linear(channels // 2, 3),
             nn.Tanh(),
         )
+        nn.init.zeros_(self.tail[0].weight)
+        nn.init.zeros_(self.tail[0].bias)
 
         self.synthetic_block1 = PointGNNConv(128, 128, z_dim)
         self.synthetic_block2 = PointGNNConv(128, 128, z_dim)
