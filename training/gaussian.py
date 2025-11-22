@@ -69,8 +69,8 @@ class GaussianDecoder(nn.Module):
                 scale_base = trunc_exp(v - 4.0)
                 scale_base = torch.clamp(scale_base, min=1e-4, max=0.03)
 
-                modulator = self.scaling_modulator(x)
-                v = scale_base * torch.sigmoid(modulator)
+                # modulator = self.scaling_modulator(x)
+                v = scale_base # * torch.sigmoid(modulator)
 
                 if (v < 0.0).any():
                     print("WARNING: Non-positive scales detected!")
