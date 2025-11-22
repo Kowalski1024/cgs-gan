@@ -188,7 +188,12 @@ class StyleGAN2Loss(Loss):
                 anisotropy_loss_list = []
 
                 for gauss in gaussians:
-                    position_loss_list.append(gauss["_xyz"].pow(2).mean())
+                    if "_xyz_init" in gauss:
+                        position_loss_list.append(
+                            (gauss["_xyz"] - gauss["_xyz_init"]).pow(2).mean()
+                        )
+                    else:
+                        position_loss_list.append(gauss["_xyz"].pow(2).mean())
 
                     # Anisotropy
                     scales = gauss["_scaling"]  # [N, 3]
@@ -202,7 +207,12 @@ class StyleGAN2Loss(Loss):
                     anisotropy_loss_list.append(anisotropy_loss)
 
                     # Displacement
-                    displacement = gauss["_xyz"].norm(dim=1).mean()
+                    if "_xyz_init" in gauss:
+                        displacement = torch.norm(
+                            gauss["_xyz"] - gauss["_xyz_init"], dim=-1
+                        ).mean()
+                    else:
+                        displacement = gauss["_xyz"].norm(dim=1).mean()
                     displacement_list.append(displacement)
 
                     # Dead Gaussians

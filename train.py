@@ -115,6 +115,12 @@ from train_helper import (
     type=float,
     default=0.01,
 )
+@click.option(
+    "--position_reg",
+    help="penalty for position (distance from origin)",
+    type=float,
+    default=1.0,
+)
 # Optional job description
 @click.option(
     "--desc", help="String to include in result dir name", type=str, default="cgs_gan"
@@ -235,7 +241,7 @@ def main(**kwargs):
         "knn_dists": opts.knn_dists,  # coeff. of KNN distance
         "knn_num_ks": opts.knn_num_ks,  # the number of KNN for calculating loss
         "center_dists": opts.center_dists,  # coeff. of center distance
-        "position_reg": 1.0,
+        "position_reg": opts.position_reg,
         "is_resume": True if opts.resume is not None else False,
         "use_multivew_reg": opts.use_multivew_reg,
         "num_multiview": opts.num_multiview,
