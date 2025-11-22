@@ -239,7 +239,7 @@ def training_loop(
             loss_kwargs=loss_kwargs
         )
         name = run_dir.split("/")[-1]
-        wandb_logger = wandb.init(project="CGS GAN", dir=run_dir, name=name, config=config)
+        wandb_logger = wandb.init(project="CGS GAN", dir=run_dir, name=name, config=config, mode="disabled")
 
     # Train.
     if rank == 0:
@@ -293,6 +293,11 @@ def training_loop(
                     grads = flat.split([param.numel() for param in params])
                     for param, grad in zip(params, grads):
                         param.grad = grad.reshape(param.shape)
+                
+                if len(params) > 0:
+                    grad_norm = flat.norm().item()
+                    logger.add('Gradients', f'{phase.name}_grad_norm', grad_norm)
+
                 phase.opt.step()
 
             # Phase done.
@@ -317,6 +322,11 @@ def training_loop(
         # Update state.
         cur_nimg += batch_size
         batch_idx += 1
+
+        if rank == 0 and (batch_idx - 1) % 2 == 0:
+            print(f"  kimg {cur_nimg / 1e3:<8.3f} G_loss: {logger.content.get('Loss/G_loss', 0):.4f}  D_loss: {logger.content.get('Loss/D_loss', 0):.4f}  Aniso: {logger.content.get('Geometry/anisotropy', 0):.2f}  Disp: {logger.content.get('Geometry/displacement', 0):.2f}  Dead: {logger.content.get('Geometry/dead_gaussians', 0):.2%}, Logit_Spread: {logger.content.get('Scores/logit_spread', 0):.4f}")
+            if 'Gradients/Gmain_grad_norm' in logger.content:
+                print(f"  G_grad: {logger.content['Gradients/Gmain_grad_norm']:.4f}  D_grad: {logger.content.get('Gradients/Dmain_grad_norm', 0):.4f}")
 
         # Perform maintenance tasks once per tick.
         done = (cur_nimg >= total_kimg * 1000)

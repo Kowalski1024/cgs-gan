@@ -27,23 +27,45 @@ PARAMETERS_DTYPE = Union[torch.Tensor, Iterable[torch.Tensor]]
 
 
 class Loss:
-    def accumulate_gradients(self, phase, real_img, real_c, gen_z, gen_c, gain, cur_nimg, logger: CustomLogger): # to be overridden by subclass
+    def accumulate_gradients(
+        self,
+        phase,
+        real_img,
+        real_c,
+        gen_z,
+        gen_c,
+        gain,
+        cur_nimg,
+        logger: CustomLogger,
+    ):  # to be overridden by subclass
         raise NotImplementedError()
 
 
 class StyleGAN2Loss(Loss):
-    def __init__(self, device, G, D, r1_gamma=10, blur_init_sigma=0, blur_fade_kimg=0, r1_gamma_init=0, r1_gamma_fade_kimg=0, resolution=512, loss_custom_options={}):
+    def __init__(
+        self,
+        device,
+        G,
+        D,
+        r1_gamma=10,
+        blur_init_sigma=0,
+        blur_fade_kimg=0,
+        r1_gamma_init=0,
+        r1_gamma_fade_kimg=0,
+        resolution=512,
+        loss_custom_options={},
+    ):
         super().__init__()
-        self.device             = device
-        self.G                  = G
-        self.D                  = D
-        self.r1_gamma           = r1_gamma
-        self.blur_init_sigma    = blur_init_sigma
-        self.blur_fade_kimg     = blur_fade_kimg
-        self.r1_gamma_init      = r1_gamma_init
+        self.device = device
+        self.G = G
+        self.D = D
+        self.r1_gamma = r1_gamma
+        self.blur_init_sigma = blur_init_sigma
+        self.blur_fade_kimg = blur_fade_kimg
+        self.r1_gamma_init = r1_gamma_init
         self.r1_gamma_fade_kimg = r1_gamma_fade_kimg
         self.resolution = resolution
-        self.resample_filter = upfirdn2d.setup_filter([1,3,3,1], device=device)
+        self.resample_filter = upfirdn2d.setup_filter([1, 3, 3, 1], device=device)
 
         self.coeffs = loss_custom_options
         self.renderer_gaussian3d = Renderer(sh_degree=0)
@@ -51,36 +73,66 @@ class StyleGAN2Loss(Loss):
     def run_G(self, z, c, resolution, update_emas=False, render_output=True):
         c_gen_conditioning = torch.zeros_like(c)
         ws = self.G.mapping(z, c_gen_conditioning, update_emas=update_emas)
-        gen_output = self.G.synthesis(ws, c, resolution=resolution, update_emas=update_emas, render_output=render_output)
+        gen_output = self.G.synthesis(
+            ws,
+            c,
+            resolution=resolution,
+            update_emas=update_emas,
+            render_output=render_output,
+        )
         return gen_output, ws
 
     def run_D(self, img, c, blur_sigma=0, update_emas=False):
         blur_size = np.floor(blur_sigma * 3)
         if blur_size > 0:
-            with torch.autograd.profiler.record_function('blur'):
-                f = torch.arange(-blur_size, blur_size + 1, device=img['image'].device).div(blur_sigma).square().neg().exp2()
-                img['image'] = upfirdn2d.filter2d(img['image'], f / f.sum())
+            with torch.autograd.profiler.record_function("blur"):
+                f = (
+                    torch.arange(-blur_size, blur_size + 1, device=img["image"].device)
+                    .div(blur_sigma)
+                    .square()
+                    .neg()
+                    .exp2()
+                )
+                img["image"] = upfirdn2d.filter2d(img["image"], f / f.sum())
         logits = self.D(img, c, update_emas=update_emas)
         return logits
 
-    def accumulate_gradients(self, phase, real_img, real_c, gen_z, gen_c, gain, cur_nimg, logger: CustomLogger):
-        assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
-        if self.G.rendering_kwargs.get('density_reg', 0) == 0:
-            phase = {'Greg': 'none', 'Gboth': 'Gmain'}.get(phase, phase)
+    def accumulate_gradients(
+        self,
+        phase,
+        real_img,
+        real_c,
+        gen_z,
+        gen_c,
+        gain,
+        cur_nimg,
+        logger: CustomLogger,
+    ):
+        assert phase in ["Gmain", "Greg", "Gboth", "Dmain", "Dreg", "Dboth"]
+        if self.G.rendering_kwargs.get("density_reg", 0) == 0:
+            phase = {"Greg": "none", "Gboth": "Gmain"}.get(phase, phase)
         if self.r1_gamma == 0:
-            phase = {'Dreg': 'none', 'Dboth': 'Dmain'}.get(phase, phase)
-        blur_sigma = max(1 - cur_nimg / (self.blur_fade_kimg * 1e3), 0) * self.blur_init_sigma if self.blur_fade_kimg > 0 else 0
+            phase = {"Dreg": "none", "Dboth": "Dmain"}.get(phase, phase)
+        blur_sigma = (
+            max(1 - cur_nimg / (self.blur_fade_kimg * 1e3), 0) * self.blur_init_sigma
+            if self.blur_fade_kimg > 0
+            else 0
+        )
         logger.add("Training", "blur sigma", blur_sigma)
         r1_gamma = self.r1_gamma
 
-        real_img = {'image': real_img}
+        real_img = {"image": real_img}
+        gen_logits = None
+        real_logits = None
 
         # Gmain: Maximize logits for generated images.
-        if phase in ['Gmain', 'Gboth']:
-            with torch.autograd.profiler.record_function('Gmain_forward'):
+        if phase in ["Gmain", "Gboth"]:
+            with torch.autograd.profiler.record_function("Gmain_forward"):
                 if self.coeffs["use_multivew_reg"]:
                     # multi view regularization
-                    gen_result, _gen_ws = self.run_G(gen_z, gen_c, resolution=self.resolution, render_output=False)
+                    gen_result, _gen_ws = self.run_G(
+                        gen_z, gen_c, resolution=self.resolution, render_output=False
+                    )
                     num_opt_steps = self.coeffs["num_multiview"]
 
                     loss_Gmain = 0
@@ -91,91 +143,180 @@ class StyleGAN2Loss(Loss):
                         cam2world_matrix = gen_c[:, :16].view(-1, 4, 4)
                         intrinsics = gen_c[:, 16:25].view(-1, 3, 3)
 
-                        cameras = extract_cameras(cam2world_matrix, intrinsics, self.resolution)
+                        cameras = extract_cameras(
+                            cam2world_matrix, intrinsics, self.resolution
+                        )
 
-                        for batch_idx, current_scene in enumerate(gen_result["gaussian_params"]):
+                        for batch_idx, current_scene in enumerate(
+                            gen_result["gaussian_params"]
+                        ):
                             camera = cameras[batch_idx]
 
                             bg = torch.ones(3, device=gen_z.device)
-                            ret_dict = self.renderer_gaussian3d.render(gaussian_params=current_scene, viewpoint_camera=camera, bg=bg)
+                            ret_dict = self.renderer_gaussian3d.render(
+                                gaussian_params=current_scene,
+                                viewpoint_camera=camera,
+                                bg=bg,
+                            )
                             batch_renderings.append(ret_dict["image"])
 
                         renderings = torch.stack(batch_renderings, dim=0)
-                        gen_logits = self.run_D({"image": renderings}, gen_c, blur_sigma=blur_sigma)
+                        gen_logits = self.run_D(
+                            {"image": renderings}, gen_c, blur_sigma=blur_sigma
+                        )
                         loss_Gmain += torch.nn.functional.softplus(-gen_logits)
                     loss_Gmain /= num_opt_steps
                 else:
                     # normal pass
-                    gen_result, _gen_ws = self.run_G(gen_z, gen_c, resolution=self.resolution)
+                    gen_result, _gen_ws = self.run_G(
+                        gen_z, gen_c, resolution=self.resolution
+                    )
                     gen_logits = self.run_D(gen_result, gen_c, blur_sigma=blur_sigma)
                     loss_Gmain = torch.nn.functional.softplus(-gen_logits)
 
                 gaussians = gen_result["gaussian_params"]
                 position_loss_list = []
+                anisotropy_list = []
+                displacement_list = []
+                dead_gaussians_list = []
+
                 for gauss in gaussians:
                     position_loss_list.append(gauss["_xyz"].pow(2).mean())
+
+                    # Anisotropy
+                    scales = gauss["_scaling"]  # [N, 3]
+                    max_scale, _ = scales.max(dim=1)
+                    min_scale, _ = scales.min(dim=1)
+                    anisotropy = (max_scale / (min_scale + 1e-8)).mean()
+                    anisotropy_list.append(anisotropy)
+
+                    # Displacement
+                    displacement = gauss["_xyz"].norm(dim=1).mean()
+                    displacement_list.append(displacement)
+
+                    # Dead Gaussians
+                    opacity = gauss["_opacity"]  # [N, 1]
+                    dead_gaussians = (opacity < 0.01).float().mean()
+                    dead_gaussians_list.append(dead_gaussians)
+
                 position_loss = torch.stack(position_loss_list).mean()
+
+                logger.add(
+                    "Geometry", "anisotropy", torch.stack(anisotropy_list).mean()
+                )
+                logger.add(
+                    "Geometry", "displacement", torch.stack(displacement_list).mean()
+                )
+                logger.add(
+                    "Geometry",
+                    "dead_gaussians",
+                    torch.stack(dead_gaussians_list).mean(),
+                )
 
                 logger.add("Position_Loss", "position_loss", position_loss)
                 logger.add("Loss", "D_loss", gen_logits)
                 logger.add("Loss_Sign", "signs_fake", gen_logits.sign())
                 logger.add("Loss", "G_loss", loss_Gmain)
 
-            with torch.autograd.profiler.record_function('Gmain_backward'):
-                ((loss_Gmain).mean().mul(gain) + position_loss * self.coeffs["position_reg"]).backward()
+            with torch.autograd.profiler.record_function("Gmain_backward"):
+                (
+                    (loss_Gmain).mean().mul(gain)
+                    + position_loss * self.coeffs["position_reg"]
+                ).backward()
                 clip_grad_norm_(self.G.parameters(), max_norm=20)
 
         # Dmain: Minimize logits for generated images.
         loss_Dgen = 0
-        if phase in ['Dmain', 'Dboth']:
-            with torch.autograd.profiler.record_function('Dgen_forward'):
-                gen_result, _gen_ws = self.run_G(gen_z, gen_c, resolution=self.resolution, update_emas=True)
-                logger.add_tensor_stats("3dgs", "_xyz", gen_result["gaussian_params"][0]["_xyz"])
-                logger.add_tensor_stats("3dgs", "_features_dc", gen_result["gaussian_params"][0]["_features_dc"])
-                logger.add_tensor_stats("3dgs", "_scaling", gen_result["gaussian_params"][0]["_scaling"])
-                logger.add_tensor_stats("3dgs", "_rotation", gen_result["gaussian_params"][0]["_rotation"])
-                logger.add_tensor_stats("3dgs", "_opacity", gen_result["gaussian_params"][0]["_opacity"])
+        if phase in ["Dmain", "Dboth"]:
+            with torch.autograd.profiler.record_function("Dgen_forward"):
+                gen_result, _gen_ws = self.run_G(
+                    gen_z, gen_c, resolution=self.resolution, update_emas=True
+                )
+                logger.add_tensor_stats(
+                    "3dgs", "_xyz", gen_result["gaussian_params"][0]["_xyz"]
+                )
+                logger.add_tensor_stats(
+                    "3dgs",
+                    "_features_dc",
+                    gen_result["gaussian_params"][0]["_features_dc"],
+                )
+                logger.add_tensor_stats(
+                    "3dgs", "_scaling", gen_result["gaussian_params"][0]["_scaling"]
+                )
+                logger.add_tensor_stats(
+                    "3dgs", "_rotation", gen_result["gaussian_params"][0]["_rotation"]
+                )
+                logger.add_tensor_stats(
+                    "3dgs", "_opacity", gen_result["gaussian_params"][0]["_opacity"]
+                )
 
-                gen_logits = self.run_D(gen_result, gen_c, blur_sigma=blur_sigma, update_emas=True)
+                gen_logits = self.run_D(
+                    gen_result, gen_c, blur_sigma=blur_sigma, update_emas=True
+                )
                 loss_Dgen = torch.nn.functional.softplus(gen_logits)
                 logger.add("Scores", "scores_fake", gen_logits)
                 logger.add("Loss_Sign", "signs_fake", gen_logits.sign())
-                
-            with torch.autograd.profiler.record_function('Dgen_backward'):
-                (loss_Dgen).mean().mul(gain).backward() # Do not use contrastive loss for D_gen
+
+            with torch.autograd.profiler.record_function("Dgen_backward"):
+                (loss_Dgen).mean().mul(
+                    gain
+                ).backward()  # Do not use contrastive loss for D_gen
                 clip_grad_norm_(self.D.parameters(), max_norm=5)
 
         # Dmain: Maximize logits for real images.
         # Dr1: Apply R1 regularization.
-        if phase in ['Dmain', 'Dreg', 'Dboth']:
-            name = 'Dreal' if phase == 'Dmain' else 'Dr1' if phase == 'Dreg' else 'Dreal_Dr1'
-            with torch.autograd.profiler.record_function(name + '_forward'):
-                real_img_tmp_image = real_img['image'].detach().requires_grad_(phase in ['Dreg', 'Dboth'])
-                real_img_tmp = {'image': real_img_tmp_image}
+        if phase in ["Dmain", "Dreg", "Dboth"]:
+            name = (
+                "Dreal"
+                if phase == "Dmain"
+                else "Dr1"
+                if phase == "Dreg"
+                else "Dreal_Dr1"
+            )
+            with torch.autograd.profiler.record_function(name + "_forward"):
+                real_img_tmp_image = (
+                    real_img["image"]
+                    .detach()
+                    .requires_grad_(phase in ["Dreg", "Dboth"])
+                )
+                real_img_tmp = {"image": real_img_tmp_image}
                 real_logits = self.run_D(real_img_tmp, real_c, blur_sigma=blur_sigma)
 
                 logger.add("Scores", "scores_real", real_logits)
                 logger.add("Loss_Sign", "signs_real", real_logits.sign())
 
+                if gen_logits is not None:
+                    logger.add(
+                        "Scores", "logit_spread", real_logits.mean() - gen_logits.mean()
+                    )
+
                 loss_Dreal = 0
-                if phase in ['Dmain', 'Dboth']:
+                if phase in ["Dmain", "Dboth"]:
                     loss_Dreal = torch.nn.functional.softplus(-real_logits)
                     logger.add("Loss", "D_loss", loss_Dgen + loss_Dreal)
 
                 loss_Dr1 = 0
-                if phase in ['Dreg', 'Dboth']:
-                    with torch.autograd.profiler.record_function('r1_grads'), conv2d_gradfix.no_weight_gradients():
-                        r1_grads = torch.autograd.grad(outputs=[real_logits.sum()], inputs=[real_img_tmp['image']], create_graph=True, only_inputs=True)
+                if phase in ["Dreg", "Dboth"]:
+                    with (
+                        torch.autograd.profiler.record_function("r1_grads"),
+                        conv2d_gradfix.no_weight_gradients(),
+                    ):
+                        r1_grads = torch.autograd.grad(
+                            outputs=[real_logits.sum()],
+                            inputs=[real_img_tmp["image"]],
+                            create_graph=True,
+                            only_inputs=True,
+                        )
                         r1_grads_image = r1_grads[0]
-                    r1_penalty = r1_grads_image.square().sum([1,2,3])
+                    r1_penalty = r1_grads_image.square().sum([1, 2, 3])
                     loss_Dr1 = r1_penalty * (r1_gamma / 2)
                     logger.add("Reg", "D_reg", loss_Dr1)
                     logger.add("Reg", "r1_penalty", r1_penalty)
 
-            with torch.autograd.profiler.record_function(name + '_backward'):
+            with torch.autograd.profiler.record_function(name + "_backward"):
                 (loss_Dreal + loss_Dr1).mean().mul(gain).backward()
                 clip_grad_norm_(self.D.parameters(), max_norm=5)
-              
+
 
 def knn_distance(pos, k):
     x = pos.permute(0, 2, 1)
@@ -185,25 +326,24 @@ def knn_distance(pos, k):
     xi = -2 * torch.bmm(xt, x)
     xs = torch.sum(xt**2, dim=2, keepdim=True)
     xst = xs.permute(0, 2, 1)
-    dist = xi + xs + xst # [B, N, N]
+    dist = xi + xs + xst  # [B, N, N]
 
     # get k NN id
     _, idx_o = torch.sort(dist, dim=2)
-    idx = idx_o[: ,: ,1:k+1] # [B, N, k]
-    idx = idx.contiguous().view(B, N*k)
+    idx = idx_o[:, :, 1 : k + 1]  # [B, N, k]
+    idx = idx.contiguous().view(B, N * k)
 
     # gather
     neighbors = []
     for b in range(B):
-        tmp = torch.index_select(x[b], 1, idx[b]) # [d, N*k] <- [d, N], 0, [N*k]
+        tmp = torch.index_select(x[b], 1, idx[b])  # [d, N*k] <- [d, N], 0, [N*k]
         tmp = tmp.view(dims, N, k)
         neighbors.append(tmp)
 
-    neighbors = torch.stack(neighbors) # [B, d, N, k]
+    neighbors = torch.stack(neighbors)  # [B, d, N, k]
 
     # centralize
-    central = x.unsqueeze(3) # [B, d, N, 1]
-    central = central.repeat(1, 1, 1, k) # [B, d, N, k]
+    central = x.unsqueeze(3)  # [B, d, N, 1]
+    central = central.repeat(1, 1, 1, k)  # [B, d, N, k]
 
     return (central - neighbors).square().mean(dim=[1, 3])
-
