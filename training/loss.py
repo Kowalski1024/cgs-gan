@@ -146,16 +146,30 @@ class StyleGAN2Loss(Loss):
                         fovx = 2 * torch.atan(intrinsics[0, 0, 2] / intrinsics[0, 0, 0])
                         fovy = 2 * torch.atan(intrinsics[0, 1, 2] / intrinsics[0, 1, 1])
 
-                        for batch_idx, current_scene in enumerate(gen_result["gaussian_params"]):
-                            render_cam = CustomCam(self.resolution, self.resolution, fovy=fovx, fovx=fovy, extr=extrinsic[batch_idx])
+                        for batch_idx, current_scene in enumerate(
+                            gen_result["gaussian_params"]
+                        ):
+                            render_cam = CustomCam(
+                                self.resolution,
+                                self.resolution,
+                                fovy=fovx,
+                                fovx=fovy,
+                                extr=extrinsic[batch_idx],
+                            )
                             bg = torch.ones(3, device=gen_z.device)
-                            ret_dict = self.renderer_gaussian3d.render(gaussian_params=current_scene, viewpoint_camera=render_cam, bg=bg)
+                            ret_dict = self.renderer_gaussian3d.render(
+                                gaussian_params=current_scene,
+                                viewpoint_camera=render_cam,
+                                bg=bg,
+                            )
                             batch_renderings.append(ret_dict["image"])
                             batch_cams.append(gen_c[batch_idx])
 
                         renderings = torch.stack(batch_renderings, dim=0)
                         cams = torch.stack(batch_cams, dim=0)
-                        gen_logits = self.run_D({"image": renderings}, cams, blur_sigma=blur_sigma)
+                        gen_logits = self.run_D(
+                            {"image": renderings}, cams, blur_sigma=blur_sigma
+                        )
                         loss_Gmain += torch.nn.functional.softplus(-gen_logits)
                     loss_Gmain /= num_opt_steps
                 else:
@@ -171,6 +185,7 @@ class StyleGAN2Loss(Loss):
                 anisotropy_list = []
                 displacement_list = []
                 dead_gaussians_list = []
+                anisotropy_loss_list = []
 
                 for gauss in gaussians:
                     position_loss_list.append(gauss["_xyz"].pow(2).mean())
@@ -182,6 +197,10 @@ class StyleGAN2Loss(Loss):
                     anisotropy = (max_scale / (min_scale + 1e-8)).mean()
                     anisotropy_list.append(anisotropy)
 
+                    # Anisotropy Loss
+                    anisotropy_loss = torch.log(max_scale / (min_scale + 1e-8)).mean()
+                    anisotropy_loss_list.append(anisotropy_loss)
+
                     # Displacement
                     displacement = gauss["_xyz"].norm(dim=1).mean()
                     displacement_list.append(displacement)
@@ -192,6 +211,7 @@ class StyleGAN2Loss(Loss):
                     dead_gaussians_list.append(dead_gaussians)
 
                 position_loss = torch.stack(position_loss_list).mean()
+                anisotropy_loss = torch.stack(anisotropy_loss_list).mean()
 
                 logger.add(
                     "Geometry", "anisotropy", torch.stack(anisotropy_list).mean()
@@ -214,6 +234,7 @@ class StyleGAN2Loss(Loss):
                 (
                     (loss_Gmain).mean().mul(gain)
                     + position_loss * self.coeffs["position_reg"]
+                    + anisotropy_loss * self.coeffs.get("anisotropy_penalty", 0.01)
                 ).backward()
                 clip_grad_norm_(self.G.parameters(), max_norm=20)
 
