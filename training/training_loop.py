@@ -239,7 +239,7 @@ def training_loop(
             loss_kwargs=loss_kwargs
         )
         name = run_dir.split("/")[-1]
-        wandb_logger = wandb.init(project="CGS GAN", dir=run_dir, name=name, config=config, mode="disabled")
+        wandb_logger = wandb.init(project="CGS GAN", dir=run_dir, name=name, config=config)
 
     # Train.
     if rank == 0:
