@@ -15,7 +15,7 @@ from training.gaussian3d_splatting.custom_cam import CustomCam
 from training.networks_stylegan2 import MappingNetwork
 from training.gaussian3d_splatting.renderer import Renderer
 
-from training.gnn_point_generator import PointGenerator
+from training.gan_generator import PointGenerator
 from torch_sparse import SparseTensor
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
