@@ -434,7 +434,9 @@ class PointGenerator(nn.Module):
         self.position_decoder = nn.ModuleList(
             [
                 SynthesisLayer(256, 128, w_dim),
+                RMSNorm(128),
                 SynthesisLayer(128, 128, w_dim),
+                RMSNorm(128),
                 nn.Linear(128, 3),  # Final projection standard
             ]
         )
