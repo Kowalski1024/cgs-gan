@@ -310,8 +310,8 @@ class StyledGaussDecoder(nn.Module):
         # Geometry Branch
         self.geo_mlp = nn.ModuleList(
             [
-                SynthesisLayer(in_dim, in_dim, w_dim),
                 SynthesisLayer(in_dim, mid_dim, w_dim),
+                SynthesisLayer(mid_dim, mid_dim, w_dim),
             ]
         )
 
