@@ -310,16 +310,16 @@ class StyledGaussDecoder(nn.Module):
         # Geometry Branch
         self.geo_mlp = nn.ModuleList(
             [
+                SynthesisLayer(in_dim, in_dim, w_dim),
                 SynthesisLayer(in_dim, mid_dim, w_dim),
-                SynthesisLayer(mid_dim, mid_dim, w_dim),
             ]
         )
 
         # Appearance Branch
         self.color_mlp = nn.ModuleList(
             [
-                SynthesisLayer(in_dim, mid_dim, w_dim),
-                SynthesisLayer(mid_dim, mid_dim, w_dim),
+                SynthesisLayer(in_dim, in_dim * 2, w_dim),
+                SynthesisLayer(in_dim * 2, in_dim, w_dim),
             ]
         )
 
@@ -328,7 +328,7 @@ class StyledGaussDecoder(nn.Module):
 
         for key, channels in self.feature_channels.items():
             if key in ["color", "shs"]:
-                layer = nn.Linear(mid_dim, channels)
+                layer = nn.Linear(in_dim, channels)
             else:
                 layer = nn.Linear(mid_dim, channels)
 
@@ -345,7 +345,7 @@ class StyledGaussDecoder(nn.Module):
                 torch.nn.init.constant_(layer.bias[0], 1.0)
             elif key == "opacity":
                 # logit(0.1) approx -2.19
-                torch.nn.init.constant_(layer.bias, -2.19)
+                torch.nn.init.constant_(layer.bias, -2.944)
             elif key == "color":
                 nn.init.xavier_uniform_(layer.weight, gain=0.1)
                 nn.init.constant_(layer.bias, 0.0)
@@ -433,10 +433,8 @@ class PointGenerator(nn.Module):
         # 3. Position Decoder - Modulated
         self.position_decoder = nn.ModuleList(
             [
-                SynthesisLayer(256, 128, w_dim, noise=False),
-                RMSNorm(128),
-                SynthesisLayer(128, 128, w_dim, noise=False),
-                RMSNorm(128),
+                SynthesisLayer(256, 128, w_dim),
+                SynthesisLayer(128, 128, w_dim),
                 nn.Linear(128, 3),  # Final projection standard
             ]
         )
@@ -457,7 +455,7 @@ class PointGenerator(nn.Module):
 
         # 5. Gaussian Decoder - Modulated
         self.gaussian_decoder = StyledGaussDecoder(
-            256, 128, w_dim, shs_degree=shs_degree, use_rgb=use_rgb
+            512, 128, w_dim, shs_degree=shs_degree, use_rgb=use_rgb
         )
 
     def forward_single(self, pos, x, edge_index, w):
@@ -495,13 +493,15 @@ class PointGenerator(nn.Module):
 
         # --- STAGE 2: APPEARANCE ---
         pos_features = self.pos_encoder2(new_pos)
-        x = torch.cat([x, pos_features], dim=-1)  # [N, 256 + 128]
+        x_stage2 = torch.cat([x, pos_features], dim=-1)  # [N, 256 + 128]
 
         for conv in self.gaussian_conv:
-            x = conv(x, edge_index, w)
+            x_stage2 = conv(x_stage2, edge_index, w)
 
         # Decode
-        gaussian_params = self.gaussian_decoder(x, w)
+        # Concatenate Stage 1 features (x) with Stage 2 features (x_stage2)
+        decoder_input = torch.cat([x_stage2, x], dim=-1)  # [N, 256 + 256]
+        gaussian_params = self.gaussian_decoder(decoder_input, w)
 
         xyz = new_pos
         scale = gaussian_params["scaling"]
