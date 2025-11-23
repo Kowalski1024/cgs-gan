@@ -298,6 +298,30 @@ def training_loop(
                     grad_norm = flat.norm().item()
                     logger.add('Gradients', f'{phase.name}_grad_norm', grad_norm)
 
+                    if 'G' in phase.name and hasattr(phase.module, 'point_gen'):
+                        pg = phase.module.point_gen
+                        def get_grad_norm(mod):
+                            total_norm = 0.0
+                            for p in mod.parameters():
+                                if p.grad is not None:
+                                    param_norm = p.grad.data.norm(2)
+                                    total_norm += param_norm.item() ** 2
+                            return total_norm ** 0.5
+
+                        logger.add('Grad_Flow', 'Stage1_Backbone', get_grad_norm(pg.point_convs))
+                        logger.add('Grad_Flow', 'Stage1_Pos', get_grad_norm(pg.position_decoder))
+                        logger.add('Grad_Flow', 'Stage2_Backbone', get_grad_norm(pg.gaussian_conv))
+                        
+                        gd = pg.gaussian_decoder
+                        logger.add('Grad_Flow', 'Head_GeoMLP', get_grad_norm(gd.geo_mlp))
+                        logger.add('Grad_Flow', 'Head_ColorMLP', get_grad_norm(gd.color_mlp))
+                        logger.add('Grad_Flow', 'Head_ScaleMod', get_grad_norm(gd.scaling_modulator))
+                        
+                        name_map = {"rotation": "Head_Rot", "opacity": "Head_Opac", "scaling": "Head_Scale", "color": "Head_Color", "shs": "Head_SHS"}
+                        for i, (key, _) in enumerate(gd.feature_channels.items()):
+                            if i < len(gd.decoders):
+                                logger.add('Grad_Flow', name_map.get(key, f"Head_{key}"), get_grad_norm(gd.decoders[i]))
+
                 phase.opt.step()
 
             # Phase done.
@@ -325,6 +349,11 @@ def training_loop(
 
         if rank == 0 and (batch_idx - 1) % 10 == 0:
             print(f"  kimg {cur_nimg / 1e3:<8.3f} G_loss: {logger.content.get('Loss/G_loss', 0):.4f}  D_loss: {logger.content.get('Loss/D_loss', 0):.4f}  Aniso: {logger.content.get('Geometry/anisotropy', 0):.2f}  Disp: {logger.content.get('Geometry/displacement', 0):.2f}  Dead: {logger.content.get('Geometry/dead_gaussians', 0):.2%}, Logit_Spread: {logger.content.get('Scores/logit_spread', 0):.4f}, G_grad: {logger.content.get('Gradients/Gboth_grad_norm', 0):.4f}  D_grad: {logger.content.get('Gradients/Dmain_grad_norm', 0):.4f}, D_reg_grad: {logger.content.get('Gradients/Dreg_grad_norm', 0):.4f}")
+            
+            grad_flow_keys = [k for k in logger.content.keys() if k.startswith('Grad_Flow/')]
+            if grad_flow_keys:
+                grad_msg = "[Grad Flow] " + " | ".join([f"{k.split('/')[-1]}: {logger.content[k]:.4f}" for k in sorted(grad_flow_keys)])
+                print(grad_msg)
 
         # Perform maintenance tasks once per tick.
         done = (cur_nimg >= total_kimg * 1000)
