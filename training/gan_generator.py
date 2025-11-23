@@ -7,6 +7,7 @@ from torch_geometric import nn as gnn
 from torch_geometric.nn import SAGEConv
 from torch_geometric.typing import Adj, OptTensor
 
+
 # --- StyleGAN2 Components (Adapted from gnn_point_generator.py) ---
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -262,6 +263,25 @@ class StyledLINKX(nn.Module):
         return out
 
 
+class _TruncExp(torch.autograd.Function):  # pylint: disable=abstract-method
+    # Implementation from torch-ngp:
+    # https://github.com/ashawkey/torch-ngp/blob/93b08a0d4ec1cc6e69d85df7f0acdfb99603b628/activation.py
+    @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
+    def forward(ctx, x):  # pylint: disable=arguments-differ
+        ctx.save_for_backward(x)
+        return torch.exp(x)
+
+    @staticmethod
+    @torch.cuda.amp.custom_bwd
+    def backward(ctx, g):  # pylint: disable=arguments-differ
+        x = ctx.saved_tensors[0]
+        return g * torch.exp(torch.clamp(x, max=15))
+
+
+trunc_exp = _TruncExp.apply
+
+
 class StyledGaussDecoder(nn.Module):
     """
     Gaussian Decoder with modulated MLPs.
@@ -290,37 +310,33 @@ class StyledGaussDecoder(nn.Module):
         # Geometry Branch
         self.geo_mlp = nn.ModuleList(
             [
-                SynthesisLayer(in_dim, in_dim, w_dim),
                 SynthesisLayer(in_dim, mid_dim, w_dim),
+                SynthesisLayer(mid_dim, mid_dim, w_dim),
             ]
         )
 
         # Appearance Branch
         self.color_mlp = nn.ModuleList(
             [
-                SynthesisLayer(in_dim, in_dim * 2, w_dim),
-                SynthesisLayer(in_dim * 2, in_dim, w_dim),
+                SynthesisLayer(in_dim, mid_dim, w_dim),
+                SynthesisLayer(mid_dim, mid_dim, w_dim),
             ]
         )
 
         # Heads (Standard Linear, as they are the final projection)
-        # We could modulate these too, but usually the feature extraction is where style lives.
-        # Let's keep them standard to preserve the specific initialization logic easily.
         self.decoders = torch.nn.ModuleList()
-        self.scaling_modulator = nn.Sequential(
-            nn.Linear(mid_dim, 3),
-            nn.Sigmoid(),
-        )
 
         for key, channels in self.feature_channels.items():
             if key in ["color", "shs"]:
-                layer = nn.Linear(in_dim, channels)
+                layer = nn.Linear(mid_dim, channels)
             else:
                 layer = nn.Linear(mid_dim, channels)
 
             # Initialization (Same as GaussDecoder)
             if key == "scaling":
-                torch.nn.init.constant_(layer.bias, -5.0)
+                # We use trunc_exp(x - 4.0), so bias 0 is fine if we subtract 4 later,
+                # or we can init bias to 0 and handle offset in forward.
+                torch.nn.init.constant_(layer.bias, 0.0)
             elif key == "shs":
                 torch.nn.init.constant_(layer.bias, 0.0)
                 torch.nn.init.constant_(layer.weight, 0.0)
@@ -328,8 +344,8 @@ class StyledGaussDecoder(nn.Module):
                 torch.nn.init.constant_(layer.bias, 0)
                 torch.nn.init.constant_(layer.bias[0], 1.0)
             elif key == "opacity":
-                # inverse_sigmoid(0.05) approx -2.94
-                torch.nn.init.constant_(layer.bias, -2.944)
+                # logit(0.1) approx -2.19
+                torch.nn.init.constant_(layer.bias, -2.19)
             elif key == "color":
                 nn.init.xavier_uniform_(layer.weight, gain=0.1)
                 nn.init.constant_(layer.bias, 0.0)
@@ -357,9 +373,9 @@ class StyledGaussDecoder(nn.Module):
                 feature = self.decoders[i](geo_features)
 
             if key == "scaling":
-                scaling = torch.sigmoid(feature) * 0.05
-                modulator = self.scaling_modulator(geo_features)
-                out = scaling * modulator
+                # Match GaussianDecoder logic: trunc_exp(v - 4.0) clamped
+                scale_base = trunc_exp(feature - 4.0)
+                out = torch.clamp(scale_base, min=1e-4, max=0.03)
             elif key == "opacity":
                 out = torch.sigmoid(feature)
             elif key == "rotation":
@@ -417,8 +433,10 @@ class PointGenerator(nn.Module):
         # 3. Position Decoder - Modulated
         self.position_decoder = nn.ModuleList(
             [
-                SynthesisLayer(256, 128, w_dim),
-                SynthesisLayer(128, 128, w_dim),
+                SynthesisLayer(256, 128, w_dim, noise=False),
+                RMSNorm(128),
+                SynthesisLayer(128, 128, w_dim, noise=False),
+                RMSNorm(128),
                 nn.Linear(128, 3),  # Final projection standard
             ]
         )
@@ -438,8 +456,9 @@ class PointGenerator(nn.Module):
         )
 
         # 5. Gaussian Decoder - Modulated
+        # Input dim is 256 (Stage 2 output) + 256 (Stage 1 output via skip) = 512
         self.gaussian_decoder = StyledGaussDecoder(
-            256, 128, w_dim, shs_degree=shs_degree, use_rgb=use_rgb
+            512, 128, w_dim, shs_degree=shs_degree, use_rgb=use_rgb
         )
 
     def forward_single(self, pos, x, edge_index, w):
@@ -450,16 +469,6 @@ class PointGenerator(nn.Module):
         # Modulated GNN Convs
         for conv in self.point_convs:
             x = conv(x, pos, edge_index, w)
-
-        # Global Feature Injection (Concatenation still useful for global context)
-        # But we can also rely on modulation.
-        # Let's keep concatenation to match TwoStageModel structure,
-        # but generate 'h' via a modulated layer or just use w?
-        # TwoStageModel used global_max_pool -> MLP.
-        # Here we can just repeat w? Or project w.
-        # Let's project w to 128 to match dimensions.
-        # Actually, let's just use a learnable constant or the pooled features modulated by w.
-        # Simpler: Just use the pooled features from x, modulated.
 
         # Global Pooling
         h = gnn.global_max_pool(x, None)  # [1, 128]
@@ -472,18 +481,23 @@ class PointGenerator(nn.Module):
         # Predict Position
         pos_feat = point_features
         for layer in self.position_decoder[:-1]:
-            pos_feat = layer(pos_feat, w)
+            if isinstance(layer, RMSNorm):
+                pos_feat = layer(pos_feat)
+            else:
+                pos_feat = layer(pos_feat, w)
         new_pos = self.position_decoder[-1](pos_feat)
 
         # --- STAGE 2: APPEARANCE ---
         pos_features = self.pos_encoder2(new_pos)
-        x = torch.cat([x, pos_features], dim=-1)  # [N, 256 + 128]
+        x_stage2 = torch.cat([x, pos_features], dim=-1)  # [N, 256 + 128]
 
         for conv in self.gaussian_conv:
-            x = conv(x, edge_index, w)
+            x_stage2 = conv(x_stage2, edge_index, w)
 
         # Decode
-        gaussian_params = self.gaussian_decoder(x, w)
+        # Concatenate Stage 1 features (x) with Stage 2 features (x_stage2)
+        decoder_input = torch.cat([x_stage2, x], dim=-1)  # [N, 256 + 256]
+        gaussian_params = self.gaussian_decoder(decoder_input, w)
 
         xyz = new_pos
         scale = gaussian_params["scaling"]
