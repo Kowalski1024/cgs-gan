@@ -345,7 +345,7 @@ class StyledGaussDecoder(nn.Module):
                 torch.nn.init.constant_(layer.bias[0], 1.0)
             elif key == "opacity":
                 # logit(0.1) approx -2.19
-                torch.nn.init.constant_(layer.bias, -2.944)
+                torch.nn.init.constant_(layer.bias, -2.19)
             elif key == "color":
                 nn.init.xavier_uniform_(layer.weight, gain=0.1)
                 nn.init.constant_(layer.bias, 0.0)
