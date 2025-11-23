@@ -448,11 +448,11 @@ def training_loop(
                         logger.add(
                             "Grad_Flow", "Head_ColorMLP", get_grad_norm(gd.color_mlp)
                         )
-                        logger.add(
-                            "Grad_Flow",
-                            "Head_ScaleMod",
-                            get_grad_norm(gd.scaling_modulator),
-                        )
+                        # logger.add(
+                        #     "Grad_Flow",
+                        #     "Head_ScaleMod",
+                        #     get_grad_norm(gd.scaling_modulator),
+                        # )
 
                         name_map = {
                             "rotation": "Head_Rot",
