@@ -422,7 +422,7 @@ class PointGenerator(nn.Module):
                 nn.Linear(128, 3),  # Final projection standard
             ]
         )
-        nn.init.normal_(self.position_decoder[-1].weight, mean=0.0, std=0.001)
+        # nn.init.normal_(self.position_decoder[-1].weight, mean=0.0, std=0.001)
         nn.init.constant_(self.position_decoder[-1].bias, 0.0)
 
         # 4. Stage 2 Backbone (Appearance) - Modulated
