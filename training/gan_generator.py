@@ -15,7 +15,7 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.scale = nn.Parameter(torch.ones(dim))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, _ = None) -> torch.Tensor:
         norm = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return norm * self.scale
 
@@ -456,9 +456,8 @@ class PointGenerator(nn.Module):
         )
 
         # 5. Gaussian Decoder - Modulated
-        # Input dim is 256 (Stage 2 output) + 256 (Stage 1 output via skip) = 512
         self.gaussian_decoder = StyledGaussDecoder(
-            512, 128, w_dim, shs_degree=shs_degree, use_rgb=use_rgb
+            256, 128, w_dim, shs_degree=shs_degree, use_rgb=use_rgb
         )
 
     def forward_single(self, pos, x, edge_index, w):
@@ -469,6 +468,16 @@ class PointGenerator(nn.Module):
         # Modulated GNN Convs
         for conv in self.point_convs:
             x = conv(x, pos, edge_index, w)
+
+        # Global Feature Injection (Concatenation still useful for global context)
+        # But we can also rely on modulation.
+        # Let's keep concatenation to match TwoStageModel structure,
+        # but generate 'h' via a modulated layer or just use w?
+        # TwoStageModel used global_max_pool -> MLP.
+        # Here we can just repeat w? Or project w.
+        # Let's project w to 128 to match dimensions.
+        # Actually, let's just use a learnable constant or the pooled features modulated by w.
+        # Simpler: Just use the pooled features from x, modulated.
 
         # Global Pooling
         h = gnn.global_max_pool(x, None)  # [1, 128]
@@ -481,23 +490,18 @@ class PointGenerator(nn.Module):
         # Predict Position
         pos_feat = point_features
         for layer in self.position_decoder[:-1]:
-            if isinstance(layer, RMSNorm):
-                pos_feat = layer(pos_feat)
-            else:
-                pos_feat = layer(pos_feat, w)
+            pos_feat = layer(pos_feat, w)
         new_pos = self.position_decoder[-1](pos_feat)
 
         # --- STAGE 2: APPEARANCE ---
         pos_features = self.pos_encoder2(new_pos)
-        x_stage2 = torch.cat([x, pos_features], dim=-1)  # [N, 256 + 128]
+        x = torch.cat([x, pos_features], dim=-1)  # [N, 256 + 128]
 
         for conv in self.gaussian_conv:
-            x_stage2 = conv(x_stage2, edge_index, w)
+            x = conv(x, edge_index, w)
 
         # Decode
-        # Concatenate Stage 1 features (x) with Stage 2 features (x_stage2)
-        decoder_input = torch.cat([x_stage2, x], dim=-1)  # [N, 256 + 256]
-        gaussian_params = self.gaussian_decoder(decoder_input, w)
+        gaussian_params = self.gaussian_decoder(x, w)
 
         xyz = new_pos
         scale = gaussian_params["scaling"]
