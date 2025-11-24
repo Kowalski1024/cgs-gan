@@ -20,6 +20,10 @@ class RMSNorm(nn.Module):
         return norm * self.scale
 
 
+def inverse_sigmoid(x):
+    return np.log(x / (1 - x))
+
+
 def fmm_modulate_linear(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -296,35 +300,46 @@ class StyledGaussDecoder(nn.Module):
         use_rgb: bool = False,
     ):
         super().__init__()
+        assert shs_degree == 0, "SH not implemented yet"
 
         self.feature_channels = {
             "rotation": 4,
             "opacity": 1,
             "scaling": 3,
         }
+
         if use_rgb:
             self.feature_channels["color"] = 3
         else:
             self.feature_channels["shs"] = 3 * (shs_degree + 1) ** 2
 
-        # Geometry Branch
-        self.geo_mlp = nn.ModuleList(
-            [
-                SynthesisLayer(in_dim, mid_dim, w_dim),
-                SynthesisLayer(mid_dim, mid_dim, w_dim),
-            ]
+        # 1. Geometry Branch (Scale, Rotation, Opacity)
+        # Compresses to mid_dim to force compact geometric representation
+        self.geo_mlp = nn.Sequential(
+            nn.Linear(in_dim, in_dim),
+            RMSNorm(in_dim),
+            nn.LeakyReLU(inplace=True),
+            nn.Linear(in_dim, mid_dim),
+            RMSNorm(mid_dim),
         )
 
-        # Appearance Branch
-        self.color_mlp = nn.ModuleList(
-            [
-                SynthesisLayer(in_dim, in_dim * 2, w_dim),
-                SynthesisLayer(in_dim * 2, in_dim, w_dim),
-            ]
+        # 2. Appearance Branch (Color/SH)
+        # Reverted to RMSNorm + LeakyReLU for stability.
+        # Kept the expansion (in_dim * 2) for capacity.
+        self.color_mlp = nn.Sequential(
+            nn.Linear(in_dim, in_dim * 2),
+            RMSNorm(in_dim * 2),
+            nn.LeakyReLU(inplace=True),
+            nn.Linear(in_dim * 2, in_dim),
+            RMSNorm(in_dim),
+            nn.LeakyReLU(inplace=True),
         )
 
-        # Heads (Standard Linear, as they are the final projection)
         self.decoders = torch.nn.ModuleList()
+        self.scaling_modulator = nn.Sequential(
+            nn.Linear(mid_dim, 3),
+            nn.Sigmoid(),
+        )
 
         for key, channels in self.feature_channels.items():
             if key in ["color", "shs"]:
@@ -332,11 +347,8 @@ class StyledGaussDecoder(nn.Module):
             else:
                 layer = nn.Linear(mid_dim, channels)
 
-            # Initialization (Same as GaussDecoder)
             if key == "scaling":
-                # We use trunc_exp(x - 4.0), so bias 0 is fine if we subtract 4 later,
-                # or we can init bias to 0 and handle offset in forward.
-                torch.nn.init.constant_(layer.bias, 0.0)
+                torch.nn.init.constant_(layer.bias, -5.0)
             elif key == "shs":
                 torch.nn.init.constant_(layer.bias, 0.0)
                 torch.nn.init.constant_(layer.weight, 0.0)
@@ -344,26 +356,37 @@ class StyledGaussDecoder(nn.Module):
                 torch.nn.init.constant_(layer.bias, 0)
                 torch.nn.init.constant_(layer.bias[0], 1.0)
             elif key == "opacity":
-                # logit(0.1) approx -2.19
-                torch.nn.init.constant_(layer.bias, -2.19)
+                torch.nn.init.constant_(layer.bias, inverse_sigmoid(0.05))
             elif key == "color":
+                # Initialize for Sigmoid
+                # Sigmoid(0) = 0.5 (Grey)
                 nn.init.xavier_uniform_(layer.weight, gain=0.1)
                 nn.init.constant_(layer.bias, 0.0)
 
             self.decoders.append(layer)
 
-    def forward(
-        self, features: torch.Tensor, w: torch.Tensor
-    ) -> dict[str, torch.Tensor]:
-        # Geometry Branch
-        geo_features = features
-        for layer in self.geo_mlp:
-            geo_features = layer(geo_features, w)
+        self.reset_parameters()
 
-        # Appearance Branch
-        color_features = features
-        for layer in self.color_mlp:
-            color_features = layer(color_features, w)
+    def reset_parameters(self):
+        for i, (key, _) in enumerate(self.feature_channels.items()):
+            layer = self.decoders[i]
+            if key == "scaling":
+                torch.nn.init.constant_(layer.bias, -5.0)
+            elif key == "shs":
+                torch.nn.init.constant_(layer.bias, 0.0)
+                torch.nn.init.constant_(layer.weight, 0.0)
+            elif key == "rotation":
+                torch.nn.init.constant_(layer.bias, 0)
+                torch.nn.init.constant_(layer.bias[0], 1.0)
+            elif key == "opacity":
+                torch.nn.init.constant_(layer.bias, inverse_sigmoid(0.05))
+            elif key == "color":
+                nn.init.xavier_uniform_(layer.weight, gain=0.1)
+                nn.init.constant_(layer.bias, 0.0)
+
+    def forward(self, features: torch.Tensor) -> dict[str, torch.Tensor]:
+        geo_features = self.geo_mlp(features)
+        color_features = self.color_mlp(features)
 
         outputs = {}
         for i, (key, _) in enumerate(self.feature_channels.items()):
@@ -373,9 +396,12 @@ class StyledGaussDecoder(nn.Module):
                 feature = self.decoders[i](geo_features)
 
             if key == "scaling":
-                # Match GaussianDecoder logic: trunc_exp(v - 4.0) clamped
-                scale_base = trunc_exp(feature - 4.0)
-                out = torch.clamp(scale_base, min=1e-4, max=0.03)
+                # CHANGED: Hard clamp killed gradients (Head_Scale: 0.0000).
+                # New approach: Sigmoid * max_scale.
+                # Always differentiable, bounded between [0, 0.05].
+                scaling = torch.sigmoid(feature) * 0.05
+                modulator = self.scaling_modulator(geo_features)
+                out = scaling * modulator
             elif key == "opacity":
                 out = torch.sigmoid(feature)
             elif key == "rotation":
@@ -385,6 +411,9 @@ class StyledGaussDecoder(nn.Module):
                 _features_rest = feature.unsqueeze(1)[:, 0:0].contiguous()
                 out = torch.cat((_features_dc, _features_rest), dim=-1)
             elif key == "color":
+                # Sigmoid * 1.2 - 0.1
+                # Range: [-0.1, 1.1]
+                # Allows reaching 0 and 1 easily, but uses Sigmoid curve which matches [0,1] data better
                 color = torch.sigmoid(feature) * 1.2 - 0.1
                 out = color
 
@@ -440,7 +469,7 @@ class PointGenerator(nn.Module):
                 nn.Linear(128, 3),  # Final projection standard
             ]
         )
-        # nn.init.normal_(self.position_decoder[-1].weight, mean=0.0, std=0.001)
+        nn.init.normal_(self.position_decoder[-1].weight, mean=0.0, std=0.001)
         nn.init.constant_(self.position_decoder[-1].bias, 0.0)
 
         # 4. Stage 2 Backbone (Appearance) - Modulated
@@ -503,7 +532,7 @@ class PointGenerator(nn.Module):
         # Decode
         # Concatenate Stage 1 features (x) with Stage 2 features (x_stage2)
         decoder_input = torch.cat([x_stage2, x], dim=-1)  # [N, 256 + 256]
-        gaussian_params = self.gaussian_decoder(decoder_input, w)
+        gaussian_params = self.gaussian_decoder(decoder_input)
 
         xyz = new_pos
         scale = gaussian_params["scaling"]
