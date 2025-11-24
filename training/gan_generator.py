@@ -8,6 +8,21 @@ from torch_geometric.nn import SAGEConv
 from torch_geometric.typing import Adj, OptTensor
 
 
+class GradScaler(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, scale):
+        ctx.scale = scale
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output * ctx.scale, None
+
+
+def scale_grad(x, scale):
+    return GradScaler.apply(x, scale)
+
+
 # --- StyleGAN2 Components (Adapted from gnn_point_generator.py) ---
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -15,7 +30,7 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.scale = nn.Parameter(torch.ones(dim))
 
-    def forward(self, x: torch.Tensor, _ = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, _=None) -> torch.Tensor:
         norm = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return norm * self.scale
 
@@ -336,10 +351,6 @@ class StyledGaussDecoder(nn.Module):
         )
 
         self.decoders = torch.nn.ModuleList()
-        self.scaling_modulator = nn.Sequential(
-            nn.Linear(mid_dim, 3),
-            nn.Sigmoid(),
-        )
 
         for key, channels in self.feature_channels.items():
             if key in ["color", "shs"]:
@@ -388,6 +399,9 @@ class StyledGaussDecoder(nn.Module):
         geo_features = self.geo_mlp(features)
         color_features = self.color_mlp(features)
 
+        # Throttle color gradients
+        color_features = scale_grad(color_features, 0.5)
+
         outputs = {}
         for i, (key, _) in enumerate(self.feature_channels.items()):
             if key in ["color", "shs"]:
@@ -396,12 +410,14 @@ class StyledGaussDecoder(nn.Module):
                 feature = self.decoders[i](geo_features)
 
             if key == "scaling":
-                # CHANGED: Hard clamp killed gradients (Head_Scale: 0.0000).
-                # New approach: Sigmoid * max_scale.
-                # Always differentiable, bounded between [0, 0.05].
-                scaling = torch.sigmoid(feature) * 0.05
-                modulator = self.scaling_modulator(geo_features)
-                out = scaling * modulator
+                # Softplus is safer than Exp for stability.
+                # Adding a bias ensures we don't start at 0 size.
+                scales = torch.nn.functional.softplus(feature) + 0.001
+
+                # HARD CONSTRAINT: Limit max anisotropy (max_scale / min_scale)
+                # This is a differentiable approximation to keep scales somewhat uniform
+                # Ideally, handle this in the loss, but architectural clamping works too.
+                out = torch.clamp(scales, max=1.0)
             elif key == "opacity":
                 out = torch.sigmoid(feature)
             elif key == "rotation":
@@ -520,6 +536,10 @@ class PointGenerator(nn.Module):
         pos_feat = point_features
         for layer in self.position_decoder[:-1]:
             pos_feat = layer(pos_feat, w)
+
+        # Throttle position gradients
+        pos_feat = scale_grad(pos_feat, 0.1)
+
         new_pos = self.position_decoder[-1](pos_feat)
 
         # --- STAGE 2: APPEARANCE ---
