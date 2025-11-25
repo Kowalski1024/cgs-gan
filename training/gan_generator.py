@@ -471,7 +471,6 @@ class PointGenerator(nn.Module):
 
         self.global_conv = nn.Sequential(
             nn.Linear(128, 128),
-            RMSNorm(128),
             nn.LeakyReLU(inplace=True),
         )
 
@@ -479,9 +478,7 @@ class PointGenerator(nn.Module):
         self.position_decoder = nn.ModuleList(
             [
                 SynthesisLayer(256, 128, w_dim),
-                RMSNorm(128),
                 SynthesisLayer(128, 128, w_dim),
-                RMSNorm(128),
             ]
         )
         self.position_decoder_head = nn.Sequential(
