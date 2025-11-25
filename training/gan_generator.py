@@ -482,11 +482,14 @@ class PointGenerator(nn.Module):
                 RMSNorm(128),
                 SynthesisLayer(128, 128, w_dim),
                 RMSNorm(128),
-                nn.Linear(128, 3),  # Final projection standard
             ]
         )
-        nn.init.normal_(self.position_decoder[-1].weight, mean=0.0, std=0.001)
-        nn.init.constant_(self.position_decoder[-1].bias, 0.0)
+        self.position_decoder_head = nn.Sequential(
+                nn.Linear(128, 3),  # Final projection standard
+                nn.Tanh()
+        )
+        nn.init.normal_(self.position_decoder_head[0].weight, mean=0.0, std=0.001)
+        nn.init.constant_(self.position_decoder_head[0].bias, 0.0)
 
         # 4. Stage 2 Backbone (Appearance) - Modulated
         self.pos_encoder2 = rff.layers.GaussianEncoding(
@@ -534,13 +537,10 @@ class PointGenerator(nn.Module):
 
         # Predict Position
         pos_feat = point_features
-        for layer in self.position_decoder[:-1]:
+        for layer in self.position_decoder:
             pos_feat = layer(pos_feat, w)
 
-        # Throttle position gradients
-        pos_feat = scale_grad(pos_feat, 0.1)
-
-        new_pos = self.position_decoder[-1](pos_feat)
+        new_pos = self.position_decoder_head(pos_feat)
 
         # --- STAGE 2: APPEARANCE ---
         pos_features = self.pos_encoder2(new_pos)
