@@ -307,54 +307,23 @@ class ImageFolderDataset(Dataset):
         self.rand_background = False
 
         print(f"using {camera_sample_mode} camera_sample_mode")
-        self.camera_sample_mode = camera_sample_mode
-
-        with open(os.path.join(f"./custom_dist/{camera_sample_mode}.json"), "r") as f:
-            index_list = json.load(f)
-
-        # original code looks through the direcotry
         if os.path.isdir(self._path):
-            self._type = "dir"
-            self._all_fnames = {
-                os.path.relpath(os.path.join(root, fname), start=self._path)
-                for root, _dirs, files in os.walk(self._path)
-                for fname in files
-            }
-        elif self._file_ext(self._path) == ".zip":
-            self._type = "zip"
-            self._all_fnames = set(self._get_zipfile().namelist())
+            self._type = 'dir'
+            self._all_fnames = list(os.path.relpath(os.path.join(root, fname), start=self._path) for root, _dirs, files in os.walk(self._path) for fname in files)
+        elif self._file_ext(self._path) == '.zip':
+            self._type = 'zip'
+            self._all_fnames = list(self._get_zipfile().namelist())
         else:
-            raise IOError("Path must point to a directory or zip")
-
+            raise IOError('Path must point to a directory or zip')
         PIL.Image.init()
-        self._image_fnames = sorted(
-            fname
-            for fname in self._all_fnames
-            if self._file_ext(fname) in PIL.Image.EXTENSION
-        )
-
-        # scan all images in folder
-        available_indices = set(
-            [int(re.findall(r"\d+", fname)[0]) for fname in self._image_fnames]
-        )
-        filtered_indices = [i for i in index_list if i in available_indices]
-
-        print("Images in directory:", len(self._image_fnames))
-        print("Oversampled Images:", len(filtered_indices))
-        print("Unique Images:", len(set(filtered_indices)))
-
-        file_ending = self._image_fnames[0].split(".")[-1]
-        self._image_fnames = [f"{i:05d}.{file_ending}" for i in filtered_indices]
-
+        self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
         if len(self._image_fnames) == 0:
-            raise IOError("No image files found in the specified path")
+            raise IOError('No image files found in the specified path')
 
         name = os.path.splitext(os.path.basename(self._path))[0]
         raw_shape = [len(self._image_fnames)] + list(self._load_raw_image(0).shape)
-        if resolution is not None and (
-            raw_shape[2] != resolution or raw_shape[3] != resolution
-        ):
-            raise IOError("Image files do not match the specified resolution")
+        if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
+            raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     @staticmethod
@@ -387,50 +356,25 @@ class ImageFolderDataset(Dataset):
     def _load_raw_image(self, raw_idx):
         fname = self._image_fnames[raw_idx]
         with self._open_file(fname) as f:
-            if self._file_ext(fname) == ".png":
+            if pyspng is not None and self._file_ext(fname) == '.png':
                 image = pyspng.load(f.read())
             else:
                 image = np.array(PIL.Image.open(f))
-            if image.ndim == 2:
-                image = image[:, :, np.newaxis]  # HW => HWC
-
-        if self.mask_path is not None:
-            mask_fname = os.path.join(
-                self.mask_path, self._image_fnames[raw_idx].split(".")[0] + ".png"
-            )
-            with self._open_file(mask_fname) as f:
-                mask_image = pyspng.load(f.read())
-            if mask_image.ndim == 2:
-                mask_image = cv2.resize(
-                    mask_image,
-                    (image.shape[0], image.shape[1]),
-                    interpolation=cv2.INTER_LINEAR,
-                )
-                mask_image = mask_image[:, :, np.newaxis]  # HW => HWC
-
-            if self.rand_background:
-                bg = np.ones_like(image)
-                bg[..., 0] = np.random.randint(low=0, high=255)
-                bg[..., 1] = np.random.randint(low=0, high=255)
-                bg[..., 2] = np.random.randint(low=0, high=255)
-            else:
-                bg = np.ones_like(image) * 255
-            image = ((mask_image / 255) * image + (1 - mask_image / 255) * bg).astype(
-                np.uint8
-            )
-        image = image.transpose(2, 0, 1)  # HWC => CHW
+        if image.ndim == 2:
+            image = image[:, :, np.newaxis] # HW => HWC
+        image = image.transpose(2, 0, 1) # HWC => CHW
         return image
 
     def _load_raw_labels(self):
-        fname = os.path.join(
-            os.path.dirname(self._path), "dataset.json"
-        )  # dataset_recrop.json
+        fname = 'dataset.json'
+        if fname not in self._all_fnames:
+            return None
         with self._open_file(fname) as f:
-            print(f"loading labels from {fname}")
-            cam_labels = json.load(f)["labels"]
-            if cam_labels is None:
-                return None
-        cam_labels = dict(cam_labels)
-        for key in cam_labels.keys():
-            cam_labels[key] = np.array(cam_labels[key], dtype=np.float32)
-        return cam_labels
+            labels = json.load(f)['labels']
+        if labels is None:
+            return None
+        labels = dict(labels)
+        labels = [labels[fname.replace('\\', '/')] for fname in self._image_fnames]
+        labels = np.array(labels)
+        labels = labels.astype({1: np.int64, 2: np.float32}[labels.ndim])
+        return labels
