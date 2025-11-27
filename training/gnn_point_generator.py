@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch_geometric.nn import PointGNNConv, global_max_pool
+from torch_geometric.nn import global_max_pool
 import numpy as np
 import math
 from torch import Tensor
@@ -50,7 +50,9 @@ def fmm_modulate_linear(
         W = W / (W.norm(dim=1, keepdim=True) + 1e-8)  # [c_out, c_in]
     W = W.to(dtype=x.dtype)
 
-    out = x @ W.T
+    x = x.view(points_num, c_in, 1)
+    out = torch.matmul(W, x)  # [num_rays, c_out, 1]
+    out = out.view(points_num, c_out)  # [num_rays, c_out]
 
     return out
 
@@ -63,7 +65,6 @@ class SynthesisLayer(torch.nn.Module):
         w_dim,
         channels_last=False,
         activation=nn.LeakyReLU(inplace=True),
-        noise=True,
         rank=10,
     ):
         super().__init__()
@@ -77,10 +78,9 @@ class SynthesisLayer(torch.nn.Module):
         self.weight = torch.nn.Parameter(
             torch.randn([out_channels, in_channels]).to(memory_format=memory_format)
         )
-        self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
+        self.bias = torch.nn.Parameter(torch.zeros([1, out_channels]))
         self.noise_strength = torch.nn.Parameter(torch.zeros([]))
         self.activation = activation
-        self.noise = noise
 
         self.reset_parameters()
 
@@ -97,18 +97,8 @@ class SynthesisLayer(torch.nn.Module):
         x = fmm_modulate_linear(
             x=x, weight=self.weight, styles=styles, activation="demod"
         )
-
-        if self.bias is not None:
-            x = x + self.bias.view(1, -1)  # Reshape bias for broadcasting
-
-        x = self.activation(x)
-
-        if self.noise:
-            noise = (
-                torch.randn(x.shape[0], self.out_channels, device=x.device)
-                * self.noise_strength
-            )
-            x = x + noise
+        noise = torch.randn(self.out_channels, device=x.device) * self.noise_strength
+        x = self.activation(x.add_(self.bias).add_(noise))
         return x
 
 
@@ -148,8 +138,6 @@ class LINKX(torch.nn.Module):
             self.edge_norm = None
             self.edge_mlp = None
 
-        self.linear_edge = SynthesisLayer(hidden_channels, hidden_channels, w_dim)
-
         channels = [in_channels] + [hidden_channels] * num_node_layers
         self.node_mlp = MLP(channels, dropout=0.0, act_first=True, act="leakyrelu")
 
@@ -180,11 +168,16 @@ class LINKX(torch.nn.Module):
         self,
         x: OptTensor,
         edge_index: Adj,
+        edge_weight: OptTensor = None,
         w=None,
     ) -> Tensor:
         """"""  # noqa: D419
-        out = self.edge_lin(edge_index)
-        out = self.linear_edge(out, w)
+        out = self.edge_lin(edge_index, edge_weight)
+
+        if self.edge_norm is not None and self.edge_mlp is not None:
+            out = self.leakyrelu(out)
+            out = self.edge_norm(out)
+            out = self.edge_mlp(out)
 
         out = out + self.cat_lin1(out)
 
@@ -195,155 +188,16 @@ class LINKX(torch.nn.Module):
 
         out = self.leakyrelu(out)
         for i, layer in enumerate(self.final_mlp):
-            out = layer(out, w)
+            out = layer(out, w[i])
         return out
 
-    def extra_repr(self):
+    def __repr__(self) -> str:
         return (
-            f"num_nodes={self.num_nodes}, "
+            f"{self.__class__.__name__}(num_nodes={self.num_nodes}, "
             f"layers={self.num_layers}, "
             f"in_channels={self.in_channels}, "
-            f"out_channels={self.out_channels}"
+            f"out_channels={self.out_channels})"
         )
-
-
-class SparseLinear(gnn.MessagePassing):
-    def __init__(self, in_channels: int, out_channels: int, bias: bool = True):
-        super().__init__(aggr="add")
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-        self.weight = nn.Parameter(torch.empty(in_channels, out_channels))
-        if bias:
-            self.bias = nn.Parameter(torch.empty(out_channels))
-        else:
-            self.register_parameter("bias", None)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        gnn.inits.kaiming_uniform(self.weight, fan=self.in_channels, a=math.sqrt(5))
-        gnn.inits.uniform(self.in_channels, self.bias)
-
-    def forward(
-        self,
-        edge_index: Adj,
-        edge_weight: OptTensor = None,
-    ) -> Tensor:
-        # propagate_type: (weight: Tensor, edge_weight: OptTensor)
-        out = self.propagate(edge_index, weight=self.weight, edge_weight=edge_weight)
-
-        if self.bias is not None:
-            out = out + self.bias
-
-        return out
-
-    def message(self, weight_j: Tensor, edge_weight: OptTensor) -> Tensor:
-        if edge_weight is None:
-            return weight_j
-        else:
-            return edge_weight.view(-1, 1) * weight_j
-
-    def message_and_aggregate(self, adj_t: Adj, weight: Tensor) -> Tensor:
-        return spmm(adj_t, weight, reduce=self.aggr)
-
-
-class BiasBlock(torch.nn.Module):
-    def __init__(
-        self,
-        num_nodes: int,
-        in_channels: int,
-        out_channels: int,
-        w_dim: int,
-        normalize: bool = True,
-    ):
-        super().__init__()
-        self.num_nodes = num_nodes
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.normalize = normalize
-
-        self.edge_lin = SparseLinear(num_nodes, out_channels)
-        self.edge_lin2 = SynthesisLayer(
-            out_channels, out_channels, w_dim=w_dim, activation=nn.Identity()
-        )
-        self.linear = SynthesisLayer(in_channels, out_channels, w_dim=w_dim)
-        self.linear2 = SynthesisLayer(
-            in_channels, out_channels, w_dim=w_dim, activation=nn.Identity()
-        )
-        self.act = nn.LeakyReLU(inplace=True)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        reset(self.edge_lin)
-        reset(self.edge_lin2)
-        reset(self.linear)
-        reset(self.linear2)
-
-    def forward(self, x: OptTensor, edge_index: Adj, w) -> Tensor:
-        x = self.linear(x, w)
-        x = self.linear2(x, w)
-
-        out = self.edge_lin(edge_index)
-        out = self.edge_lin2(out, w)
-
-        return self.act(x + out)
-
-
-class GNNConv(gnn.MessagePassing):
-    def __init__(
-        self,
-        channels_in: int,
-        channels_out: int,
-        w_dim: int,
-        edge_scale_init: float = 0.01,
-        **kwargs,
-    ):
-        kwargs.setdefault("aggr", "add")
-        super().__init__(**kwargs)
-        self.channels_in = channels_in
-        self.channels_out = channels_out
-        self.edge_scale_init = edge_scale_init
-
-        self.lin_in = SynthesisLayer(
-            channels_in, channels_out, w_dim=w_dim, activation=nn.Identity()
-        )
-        self.lin_hidden = SynthesisLayer(
-            channels_in, channels_out, w_dim=w_dim, activation=nn.Identity()
-        )
-        self.lin_edge = SynthesisLayer(
-            channels_out, channels_out, w_dim=w_dim, activation=nn.Identity()
-        )
-        self.edge_scale = nn.Parameter(torch.empty(channels_out))
-        self.act = nn.LeakyReLU(inplace=True)
-        self.act2 = nn.LeakyReLU()
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        super().reset_parameters()
-        torch.nn.init.constant_(self.edge_scale, self.edge_scale_init)
-        reset(self.lin_in)
-        reset(self.lin_hidden)
-        reset(self.lin_edge)
-
-    def forward(self, x: Tensor, edge_index: Adj, w) -> Tensor:
-        x = self.lin_in(x, w)
-
-        edges = x * self.edge_scale
-        out = self.propagate(edge_index, x=edges)
-        out = self.lin_edge(out, w)
-        x = self.act2(x)
-        x = self.lin_hidden(x, w)
-
-        return self.act(x + out)
-
-    def message(self, x_j: Tensor) -> Tensor:
-        return x_j
-
-    def message_and_aggregate(self, adj_t: Adj, x) -> Tensor:
-        return spmm(adj_t, x, reduce=self.aggr)
 
 
 class PointGNNConv(gnn.MessagePassing):
@@ -355,11 +209,10 @@ class PointGNNConv(gnn.MessagePassing):
     def __init__(
         self,
         channels,
-        out_channels,
         z_dim,
         **kwargs,
     ):
-        kwargs.setdefault("aggr", "add")
+        kwargs.setdefault("aggr", "max")
         super().__init__(**kwargs)
 
         self.mlp_h = nn.ModuleList(
@@ -375,7 +228,6 @@ class PointGNNConv(gnn.MessagePassing):
                 SynthesisLayer(channels, channels, z_dim),
             ]
         )
-        self.edge_scale = nn.Parameter(torch.ones(channels) * 0.01)
 
         self.reset_parameters()
 
@@ -387,11 +239,11 @@ class PointGNNConv(gnn.MessagePassing):
     def forward(self, x: Tensor, pos: Tensor, edge_index: Adj, w: Tensor) -> Tensor:
         delta = x
         for i, layer in enumerate(self.mlp_h):
-            delta = layer(delta, w)
-        out = self.propagate(edge_index, x=x * self.edge_scale, pos=pos, delta=delta)
+            delta = layer(delta, w[i])
+        out = self.propagate(edge_index, x=x, pos=pos, delta=delta)
         for i, layer in enumerate(self.mlp_g):
-            out = layer(out, w)
-        return x + out
+            out = layer(out, w[i])
+        return x + out, delta
 
     def message(
         self, pos_j: Tensor, pos_i: Tensor, x_i: Tensor, x_j: Tensor, delta_i: Tensor
@@ -414,9 +266,6 @@ class CloudGenerator(nn.Module):
         self.z_dim = z_dim
         self.blocks = blocks
 
-        self.pos_offset = nn.Parameter(torch.zeros(1, 3))
-        self.pos_scale = nn.Parameter(torch.ones(1, 3))
-
         self.global_conv = nn.Sequential(
             nn.Linear(channels, channels),
             nn.LeakyReLU(inplace=True),
@@ -424,45 +273,60 @@ class CloudGenerator(nn.Module):
             nn.LeakyReLU(inplace=True),
         )
 
-        self.tail = nn.Sequential(
-            nn.Linear(channels // 2, 3),
-            nn.Tanh(),
+        self.conv_blocks = nn.ModuleList(
+            [
+                PointGNNConv(128, z_dim),
+                PointGNNConv(128, z_dim),
+                PointGNNConv(128, z_dim),
+            ]
         )
 
-        self.synthetic_block1 = PointGNNConv(128, 128, z_dim)
-        self.synthetic_block2 = PointGNNConv(128, 128, z_dim)
-        # self.synthetic_block3 = PointGNNConv(128, 128, z_dim)
-        # self.synthetic_block8 = PointGNNConv(128, 128, z_dim)
-        self.synthetic_block4 = LINKX(num_pts, 256, 256, 256, 2, z_dim)
-        self.synthetic_block5 = LINKX(num_pts, 256, 256, 256, 2, z_dim)
-        # self.synthetic_block6 = LINKX(POINTS, 256, 256, 256, 2, z_dim)
-        # self.synthetic_block7 = LINKX(POINTS, 256, 256, 256, 2, z_dim)
-
-        self.layer_1 = SynthesisLayer(channels * 2, channels, z_dim, noise=False)
-        self.layer_2 = SynthesisLayer(channels, channels // 2, z_dim, noise=False)
+        self.tail = nn.ModuleList(
+            [
+                SynthesisLayer(channels * 2, channels, z_dim),
+                SynthesisLayer(channels, channels // 2, z_dim),
+                nn.Sequential(
+                    nn.Linear(channels // 2, 3),
+                    nn.Tanh(),
+                ),
+            ]
+        )
 
     def forward(self, pos, x, edge_index, batch, w):
-        x = self.synthetic_block1(x, pos, edge_index, w[0])
-        x = self.synthetic_block2(x, pos, edge_index, w[0])
-        # x = self.synthetic_block3(x, pos, edge_index, w[0])
-        # x = self.synthetic_block8(x, edge_index, w[0])
+        for layer in self.conv_blocks:
+            x, _ = layer(x, pos, edge_index, w[:2])
 
         h = global_max_pool(x, batch)
         h = self.global_conv(h)
         h = h.repeat(x.size(0), 1)
 
         x = torch.cat([x, h], dim=-1)
-        new_pos = self.layer_1(x, w[0])
-        new_pos = self.layer_2(new_pos, w[0])
-        new_pos = self.tail(new_pos) * self.pos_scale + self.pos_offset
-        x = x.detach()
-        pre_feat = x
-        x = self.synthetic_block4(x, edge_index, w[0])
-        x = self.synthetic_block5(x, edge_index, w[0])
-        # x = self.synthetic_block6(x, edge_index, w[0])
-        # x = self.synthetic_block7(x, edge_index, w[0])
+        pos = x
+        for layer in self.tail[:-1]:
+            pos = layer(pos, w[0])
+        pos = self.tail[-1](pos)
 
-        return new_pos, pre_feat, x
+        return pos, x
+
+
+class GaussiansGenerator(nn.Module):
+    def __init__(self, channels=256, num_pts=1024, z_dim=128, blocks=1):
+        super().__init__()
+        self.z_dim = z_dim
+
+        self.synthetic_block1 = LINKX(num_pts, channels, channels, channels, 3, z_dim)
+        self.synthetic_block2 = LINKX(num_pts, channels, channels, channels, 3, z_dim)
+        self.synthetic_block3 = LINKX(num_pts, channels, channels, channels, 3, z_dim)
+        self.synthetic_block4 = LINKX(num_pts, channels, channels, channels, 3, z_dim)
+
+    def forward(self, pos, x, edge_index, batch, w):
+        x_ = x
+        x = self.synthetic_block1(x, edge_index, w=w[:3])
+        x = self.synthetic_block2(x, edge_index, w=w[3:6])
+        x = self.synthetic_block3(x, edge_index, w=w[6:9])
+        x = self.synthetic_block4(x, edge_index, w=w[9:])
+
+        return torch.cat([x, x_], dim=-1)
 
 
 class PointGenerator(nn.Module):
@@ -473,16 +337,10 @@ class PointGenerator(nn.Module):
     ):
         super().__init__()
         self.num_pts = options["num_pts"]
-        self.point_encoder = CloudGenerator(num_pts=self.num_pts, z_dim=w_dim)
-        self.decoder_scale = GaussianDecoder(
-            {"scaling": 3, "rotation": 4}, 512, hidden_channles=128
-        )
-        # self.decoder_rotation = GaussianDecoder({}, 512, hidden_channles=128)
-        self.decoder_color = GaussianDecoder(
-            {
-                "opacity": 1,
-                "shs": 3,
-            },
+        self.cloud_gen = CloudGenerator(num_pts=self.num_pts, z_dim=w_dim)
+        self.gauss_gen = GaussiansGenerator(num_pts=self.num_pts, z_dim=w_dim)
+        self.decoder = GaussianDecoder(
+            {"scaling": 3, "rotation": 4, "opacity": 1, "shs": 3, "xyz": 3},
             512,
             hidden_channles=128,
         )
@@ -499,20 +357,9 @@ class PointGenerator(nn.Module):
         color = torch.empty((B, self.num_pts, 3), device=ws.device)
 
         for i, w_i in enumerate(ws):
-            point_cloud, pre_feat, gaussians_features = self.point_encoder(
-                pos, x, edge_index, None, w_i
-            )
-            scale_features = self.decoder_scale(
-                torch.cat([gaussians_features, pre_feat], dim=-1)
-            )
-            color_features = self.decoder_color(
-                torch.cat([gaussians_features, pre_feat], dim=-1)
-            )
-            gaussian_model = EasyDict(
-                xyz=point_cloud,
-                **scale_features,
-                **color_features,
-            )
+            point_cloud, point_features = self.cloud_gen(pos, x, edge_index, None, w_i)
+            gauss_features = self.gauss_gen(pos, point_features, edge_index, None, w_i)
+            gaussian_model = self.decoder(gauss_features, point_cloud)
 
             xyz[i] = gaussian_model.xyz
             scale[i] = gaussian_model.scaling
