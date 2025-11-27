@@ -102,7 +102,7 @@ def main(**kwargs):
 
     # Training Data
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
-    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name="training.dataset.CarsDataset", data=opts.data, cam_sample_mode=opts.cam_sample_mode)
+    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name="training.dataset.ImageFolderDataset", data=opts.data, cam_sample_mode=opts.cam_sample_mode)
     if opts.cond and not c.training_set_kwargs.use_labels:
         raise click.ClickException("--cond=True requires labels specified in dataset.json")
     c.training_set_kwargs.use_labels = opts.cond

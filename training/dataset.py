@@ -304,7 +304,7 @@ class ImageFolderDataset(Dataset):
         self._path = path
         self._zipfile = None
         self.mask_path = os.path.join(os.path.dirname(path), "mask")
-        self.rand_background = rand_background
+        self.rand_background = False
 
         print(f"using {camera_sample_mode} camera_sample_mode")
         self.camera_sample_mode = camera_sample_mode
