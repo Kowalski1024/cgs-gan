@@ -56,7 +56,7 @@ class GaussianDecoder(nn.Module):
             elif k == "shs":
                 v = torch.tanh(v) * 1.1
                 v = (v + 1) / 2
-                v = torch.reshape(v, (v.shape[0], -1, 3))
+                v = torch.reshape(v, (v.shape[0], 3))
             elif k == "xyz":
                 max_step = 1.2 / 32
                 v = (torch.sigmoid(v) - 0.5) * max_step
