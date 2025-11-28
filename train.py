@@ -87,7 +87,7 @@ def main(**kwargs):
 
     # Discriminator
     c.D_kwargs = dnnlib.EasyDict(block_kwargs=dnnlib.EasyDict(), mapping_kwargs=dnnlib.EasyDict(), epilogue_kwargs=dnnlib.EasyDict())
-    c.D_kwargs.class_name = "training.discriminator.Discriminator"
+    c.D_kwargs.class_name = "training.networks_stylegan2.Discriminator"
     c.D_kwargs.block_kwargs.freeze_layers = opts.freezed
     c.D_kwargs.epilogue_kwargs.mbstd_group_size = opts.mbstd_group
     c.D_kwargs.channel_base = opts.cbase
