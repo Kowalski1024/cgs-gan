@@ -13,7 +13,12 @@ from torch_utils.logger import CustomLogger
 import wandb
 import load_network
 from metrics import metric_main
-from training.training_utils import save_image_grid, setup_snapshot_image_grid
+from training.training_utils import (
+    save_image_grid,
+    save_radial_power_spectrum_plot,
+    save_spectrum_image_grid,
+    setup_snapshot_image_grid,
+)
 
 
 class _DCWrapper(torch.nn.Module):
@@ -254,6 +259,15 @@ def training_loop(
         print('Exporting sample images...')
         grid_size, images, labels = setup_snapshot_image_grid(training_set=training_set, gw=10, gh=10)
         save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
+        save_spectrum_image_grid(
+            images,
+            os.path.join(run_dir, 'reals_spectrum.png'),
+            grid_size=grid_size,
+        )
+        save_radial_power_spectrum_plot(
+            images,
+            os.path.join(run_dir, 'reals_power_spectrum.png'),
+        )
         grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
 
@@ -393,6 +407,17 @@ def training_loop(
             save_image_grid(
                 images, os.path.join(run_dir, f'fakes{cur_nimg // 1000:06d}.png'), drange=[-1, 1],
                 grid_size=grid_size, wandb_logger=wandb_logger
+            )
+            save_spectrum_image_grid(
+                images,
+                os.path.join(run_dir, f'fakes{cur_nimg // 1000:06d}_spectrum.png'),
+                grid_size=grid_size,
+                wandb_logger=wandb_logger,
+            )
+            save_radial_power_spectrum_plot(
+                images,
+                os.path.join(run_dir, f'fakes{cur_nimg // 1000:06d}_power_spectrum.png'),
+                wandb_logger=wandb_logger,
             )
 
         # Save network snapshot.
