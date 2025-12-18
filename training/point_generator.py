@@ -6,6 +6,7 @@ from dnnlib import EasyDict
 from training.networks_stylegan2 import FullyConnectedLayer
 from training.transformer_inter import Transformer, MLP, AdaptiveNorm
 from torch_utils import persistence
+import rff
 
 
 @persistence.persistent_class
@@ -194,7 +195,9 @@ class PointGenerator(nn.Module):
     ):
         super().__init__()
 
-        self.conv_in = CoordInjection_const(pe_dim=256, pe_res=512)  # this will be used by default
+        self.conv_in = rff.layers.GaussianEncoding(
+            sigma=10.0, input_size=3, encoded_size=512 // 2
+        )
         self.n_transformer = options["n_transformer"]
         self.upsample_ratio =       [1, 4, 4,  4,  2,   2,   2,   2]
         self.upsample_ratio_accum = [1, 4, 16, 64, 128, 256, 512, 1024]
