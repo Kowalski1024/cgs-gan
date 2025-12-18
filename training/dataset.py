@@ -11,38 +11,28 @@
 """Streaming images and labels from datasets created with dataset_tool.py."""
 
 import os
-import re
-
-import cv2
 import numpy as np
 import zipfile
 import PIL.Image
 import json
 import torch
-from tqdm import tqdm
 import dnnlib
-import pyspng
 
+try:
+    import pyspng
+except ImportError:
+    pyspng = None
 
-def flip_yaw(pose_matrix):
-    flipped = pose_matrix.copy()
-    flipped[0, 1] *= -1
-    flipped[0, 2] *= -1
-    flipped[1, 0] *= -1
-    flipped[2, 0] *= -1
-    flipped[0, 3] *= -1
-    return flipped
-
+#----------------------------------------------------------------------------
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        name,  # Name of the dataset.
-        raw_shape,  # Shape of the raw image data (NCHW).
-        max_size=None,  # Artificially limit the size of the dataset. None = no limit. Applied before xflip.
-        use_labels=False,  # Enable conditioning labels? False = label dimension is zero.
-        xflip=False,  # Artificially double the size of the dataset via x-flips. Applied after max_size.
-        random_seed=0,  # Random seed to use when applying max_size.
+    def __init__(self,
+        name,                   # Name of the dataset.
+        raw_shape,              # Shape of the raw image data (NCHW).
+        max_size    = None,     # Artificially limit the size of the dataset. None = no limit. Applied before xflip.
+        use_labels  = False,    # Enable conditioning labels? False = label dimension is zero.
+        xflip       = False,    # Artificially double the size of the dataset via x-flips. Applied after max_size.
+        random_seed = 0,        # Random seed to use when applying max_size.
     ):
         self._name = name
         self._raw_shape = list(raw_shape)
@@ -65,17 +55,24 @@ class Dataset(torch.utils.data.Dataset):
     def _get_raw_labels(self):
         if self._raw_labels is None:
             self._raw_labels = self._load_raw_labels() if self._use_labels else None
-            all_labels = np.array([label for label in self._raw_labels.values()])
-            self._raw_labels_std = all_labels.std(0)
+            if self._raw_labels is None:
+                self._raw_labels = np.zeros([self._raw_shape[0], 0], dtype=np.float32)
+            assert isinstance(self._raw_labels, np.ndarray)
+            assert self._raw_labels.shape[0] == self._raw_shape[0]
+            assert self._raw_labels.dtype in [np.float32, np.int64]
+            if self._raw_labels.dtype == np.int64:
+                assert self._raw_labels.ndim == 1
+                assert np.all(self._raw_labels >= 0)
+            self._raw_labels_std = self._raw_labels.std(0)
         return self._raw_labels
 
-    def close(self):  # to be overridden by subclass
+    def close(self): # to be overridden by subclass
         pass
 
-    def _load_raw_image(self, raw_idx):  # to be overridden by subclass
+    def _load_raw_image(self, raw_idx): # to be overridden by subclass
         raise NotImplementedError
 
-    def _load_raw_labels(self):  # to be overridden by subclass
+    def _load_raw_labels(self): # to be overridden by subclass
         raise NotImplementedError
 
     def __getstate__(self):
@@ -96,25 +93,23 @@ class Dataset(torch.utils.data.Dataset):
         assert list(image.shape) == self.image_shape
         assert image.dtype == np.uint8
         if self._xflip[idx]:
-            assert image.ndim == 3  # CHW
+            assert image.ndim == 3 # CHW
             image = image[:, :, ::-1]
         return image.copy(), self.get_label(idx)
 
     def get_label(self, idx):
-        fname = self._image_fnames[self._raw_idx[idx]]
-        label = self._get_raw_labels()[fname.split('.')[0] + ".png"]
-        label = np.array(label)
-        if self._xflip[idx] == 1:
-            flipped_pose = flip_yaw(label[:16].reshape(4, 4)).reshape(-1)
-            label[:16] = flipped_pose
+        label = self._get_raw_labels()[self._raw_idx[idx]]
+        if label.dtype == np.int64:
+            onehot = np.zeros(self.label_shape, dtype=np.float32)
+            onehot[label] = 1
+            label = onehot
         return label.copy()
 
     def get_details(self, idx):
         d = dnnlib.EasyDict()
         d.raw_idx = int(self._raw_idx[idx])
-        d.xflip = int(self._xflip[idx]) != 0
-        fname = self._image_fnames[self._raw_idx[idx]]
-        d.raw_label = self._get_raw_labels()[fname.split('.')[0] + ".png"].copy()
+        d.xflip = (int(self._xflip[idx]) != 0)
+        d.raw_label = self._get_raw_labels()[d.raw_idx].copy()
         return d
 
     def get_label_std(self):
@@ -130,12 +125,12 @@ class Dataset(torch.utils.data.Dataset):
 
     @property
     def num_channels(self):
-        assert len(self.image_shape) == 3  # CHW
+        assert len(self.image_shape) == 3 # CHW
         return self.image_shape[0]
 
     @property
     def resolution(self):
-        assert len(self.image_shape) == 3  # CHW
+        assert len(self.image_shape) == 3 # CHW
         assert self.image_shape[1] == self.image_shape[2]
         return self.image_shape[1]
 
@@ -143,7 +138,10 @@ class Dataset(torch.utils.data.Dataset):
     def label_shape(self):
         if self._label_shape is None:
             raw_labels = self._get_raw_labels()
-            self._label_shape = raw_labels[list(raw_labels.keys())[0]].shape
+            if raw_labels.dtype == np.int64:
+                self._label_shape = [int(np.max(raw_labels)) + 1]
+            else:
+                self._label_shape = raw_labels.shape[1:]
         return list(self._label_shape)
 
     @property
@@ -159,62 +157,37 @@ class Dataset(torch.utils.data.Dataset):
     def has_onehot_labels(self):
         return self._get_raw_labels().dtype == np.int64
 
+#----------------------------------------------------------------------------
 
 class ImageFolderDataset(Dataset):
-    def __init__(
-        self,
-        path,
-        resolution=None,
+    def __init__(self,
+        path,                   # Path to directory or zip.
+        resolution      = None, # Ensure specific resolution, None = highest available.
         camera_sample_mode=None,
-        rand_background=True,
-        **super_kwargs,
+        rand_background=None,
+        **super_kwargs,         # Additional arguments for the Dataset base class.
     ):
         self._path = path
         self._zipfile = None
-        self.mask_path = os.path.join(os.path.dirname(path), "mask")
-        self.rand_background = rand_background
 
-        print(f"using {camera_sample_mode} camera_sample_mode")
-        self.camera_sample_mode = camera_sample_mode
-
-        with open(os.path.join(f'./custom_dist/{camera_sample_mode}.json'), "r") as f:
-            index_list = json.load(f)
-
-        # original code looks through the direcotry
         if os.path.isdir(self._path):
-            self._type = "dir"
-            self._all_fnames = {
-                os.path.relpath(os.path.join(root, fname), start=self._path)
-                for root, _dirs, files in os.walk(self._path)
-                for fname in files
-            }
-        elif self._file_ext(self._path) == ".zip":
-            self._type = "zip"
+            self._type = 'dir'
+            self._all_fnames = {os.path.relpath(os.path.join(root, fname), start=self._path) for root, _dirs, files in os.walk(self._path) for fname in files}
+        elif self._file_ext(self._path) == '.zip':
+            self._type = 'zip'
             self._all_fnames = set(self._get_zipfile().namelist())
         else:
-            raise IOError("Path must point to a directory or zip")
+            raise IOError('Path must point to a directory or zip')
 
         PIL.Image.init()
         self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION)
-
-        # scan all images in folder
-        available_indices = set([int(re.findall(r"\d+", fname)[0]) for fname in self._image_fnames])
-        filtered_indices = [i for i in index_list if i in available_indices]
-
-        print("Images in directory:", len(self._image_fnames))
-        print("Oversampled Images:", len(filtered_indices))
-        print("Unique Images:", len(set(filtered_indices)))
-
-        file_ending = self._image_fnames[0].split(".")[-1]
-        self._image_fnames = [f"{i:05d}.{file_ending}" for i in filtered_indices]
-
         if len(self._image_fnames) == 0:
-            raise IOError("No image files found in the specified path")
+            raise IOError('No image files found in the specified path')
 
         name = os.path.splitext(os.path.basename(self._path))[0]
         raw_shape = [len(self._image_fnames)] + list(self._load_raw_image(0).shape)
         if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
-            raise IOError("Image files do not match the specified resolution")
+            raise IOError('Image files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     @staticmethod
@@ -222,16 +195,16 @@ class ImageFolderDataset(Dataset):
         return os.path.splitext(fname)[1].lower()
 
     def _get_zipfile(self):
-        assert self._type == "zip"
+        assert self._type == 'zip'
         if self._zipfile is None:
             self._zipfile = zipfile.ZipFile(self._path)
         return self._zipfile
 
     def _open_file(self, fname):
-        if self._type == "dir":
-            return open(os.path.join(self._path, fname), "rb")
-        if self._type == "zip":
-            return self._get_zipfile().open(fname, "r")
+        if self._type == 'dir':
+            return open(os.path.join(self._path, fname), 'rb')
+        if self._type == 'zip':
+            return self._get_zipfile().open(fname, 'r')
         return None
 
     def close(self):
@@ -247,41 +220,27 @@ class ImageFolderDataset(Dataset):
     def _load_raw_image(self, raw_idx):
         fname = self._image_fnames[raw_idx]
         with self._open_file(fname) as f:
-            if self._file_ext(fname) == ".png":
+            if pyspng is not None and self._file_ext(fname) == '.png':
                 image = pyspng.load(f.read())
             else:
                 image = np.array(PIL.Image.open(f))
-            if image.ndim == 2:
-                image = image[:, :, np.newaxis]  # HW => HWC
-
-        if self.mask_path is not None:
-            mask_fname = os.path.join(self.mask_path, self._image_fnames[raw_idx].split(".")[0] + ".png")
-            with self._open_file(mask_fname) as f:
-                mask_image = pyspng.load(f.read())
-            if mask_image.ndim == 2:
-                mask_image = cv2.resize(mask_image, (image.shape[0], image.shape[1]), interpolation=cv2.INTER_LINEAR)
-                mask_image = mask_image[:, :, np.newaxis]  # HW => HWC
-
-            if self.rand_background:
-                bg = np.ones_like(image)
-                bg[..., 0] = np.random.randint(low=0, high=255)
-                bg[..., 1] = np.random.randint(low=0, high=255)
-                bg[..., 2] = np.random.randint(low=0, high=255)
-            else:
-                bg = np.ones_like(image) * 255
-            image = ((mask_image / 255) * image + (1 - mask_image / 255) * bg).astype(np.uint8)
-        image = image.transpose(2, 0, 1)  # HWC => CHW
+        if image.ndim == 2:
+            image = image[:, :, np.newaxis] # HW => HWC
+        image = image.transpose(2, 0, 1) # HWC => CHW
         return image
 
     def _load_raw_labels(self):
-        fname = os.path.join(os.path.dirname(self._path), "dataset.json") # dataset_recrop.json
+        fname = 'dataset.json'
+        if fname not in self._all_fnames:
+            return None
         with self._open_file(fname) as f:
-            print(f"loading labels from {fname}")
-            cam_labels = json.load(f)["labels"]
-            if cam_labels is None:
-                return None
-        cam_labels = dict(cam_labels)
-        for key in cam_labels.keys():
-            cam_labels[key] = np.array(cam_labels[key], dtype=np.float32)
-        return cam_labels
+            labels = json.load(f)['labels']
+        if labels is None:
+            return None
+        labels = dict(labels)
+        labels = [labels[fname.replace('\\', '/')] for fname in self._image_fnames]
+        labels = np.array(labels)
+        labels = labels.astype({1: np.int64, 2: np.float32}[labels.ndim])
+        return labels
 
+#----------------------------------------------------------------------------

@@ -16,14 +16,23 @@ from metrics import metric_main
 from training.training_utils import save_image_grid, setup_snapshot_image_grid
 
 
+class _DCWrapper(torch.nn.Module):
+    def __init__(self, D: torch.nn.Module, C: torch.nn.Module):
+        super().__init__()
+        self.D = D
+        self.C = C
+
+
 def training_loop(
         run_dir='.',                # Output directory.
         training_set_kwargs={},     # Options for training set.
         data_loader_kwargs={},      # Options for torch.utils.data.DataLoader.
         G_kwargs={},                # Options for generator network.
         D_kwargs={},                # Options for discriminator network.
+        C_kwargs={},                # Options for spectral-domain classifier network (optional).
         G_opt_kwargs={},            # Options for generator optimizer.
         D_opt_kwargs={},            # Options for discriminator optimizer.
+        C_opt_kwargs={},            # Options for classifier optimizer (optional).
         loss_kwargs={},             # Options for loss function.
         metrics=[],                 # Metrics to evaluate during training.
         random_seed=0,              # Global random seed.
@@ -80,6 +89,14 @@ def training_loop(
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device)
     G.register_buffer('dataset_label_std', torch.tensor(training_set.get_label_std()).to(device))
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(device)
+    C = None
+    if isinstance(C_kwargs, dict) and C_kwargs.get('class_name', None) is not None:
+        # The spectral classifier does not take c_dim; pass only what it expects.
+        C = dnnlib.util.construct_class_by_name(
+            **C_kwargs,
+            img_resolution=training_set.resolution,
+            img_channels=training_set.num_channels,
+        ).train().requires_grad_(False).to(device)
     G_ema = copy.deepcopy(G).eval()
 
     # Resume from existing pickle.0
@@ -89,6 +106,8 @@ def training_loop(
             resume_data = load_network.load_network_pkl(f)
         for name, module in [('G', G), ('D', D), ('G_ema', G_ema)]:
             misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
+        if (C is not None) and ('C' in resume_data):
+            misc.copy_params_and_buffers(resume_data['C'], C, require_all=False)
 
     # Print network summary tables.
     if rank == 0:
@@ -105,12 +124,14 @@ def training_loop(
         c = torch.tile(cam, [batch_gpu, 1])
         img = misc.print_module_summary(G, [z, c])
         misc.print_module_summary(D, [img, c])
+        if C is not None:
+            misc.print_module_summary(C, [img, c])
         torch.cuda.empty_cache()
 
     # Distribute across GPUs.
     if rank == 0:
         print(f'Distributing across {num_gpus} GPUs...')
-    for module in [G, D, G_ema]:
+    for module in [G, D, C, G_ema]:
         if module is not None:
             for param in misc.params_and_buffers(module):
                 if param.numel() > 0 and num_gpus > 1:
@@ -119,11 +140,31 @@ def training_loop(
     # Setup training phases.
     if rank == 0:
         print('Setting up training phases...')
-    loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, **loss_kwargs)  # subclass of training.loss.Loss
+    loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, C=C, **loss_kwargs)  # subclass of training.loss.Loss
     phases = []
-    for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]:
+
+    # SSD-style schedule: when C is enabled, use GC and DC steps (and update D+C jointly).
+    # Optionally apply lazy regularization for DC using D_reg_interval.
+    # C shares D optimizer hyperparameters (including LR).
+    use_ssd_spec_cls = (C is not None)
+    if use_ssd_spec_cls:
+        dc_wrapper = _DCWrapper(D=D, C=C)
+
+        # DC optimizer: shared hyperparameters for D and C.
+        dc_opt_kwargs = dnnlib.EasyDict(D_opt_kwargs)
+
+        # Use lazy reg for DC if requested by D_reg_interval.
+        dc_reg_interval = D_reg_interval
+        phase_specs = [
+            ('DC', dc_wrapper, dc_opt_kwargs, dc_reg_interval),
+            ('GC', G, G_opt_kwargs, None),
+        ]
+    else:
+        phase_specs = [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]
+
+    for name, module, opt_kwargs, reg_interval in phase_specs:
         if reg_interval is None:
-            if name == "G":
+            if name in ("G", "GC"):
                 model_params, gaussian_params, gaussian_params_names = [], [], []
                 for n, p in module.named_parameters():
                     if n == '_xyz':
@@ -157,7 +198,7 @@ def training_loop(
             opt_kwargs.lr = opt_kwargs.lr * mb_ratio
             opt_kwargs.betas = [beta ** mb_ratio for beta in opt_kwargs.betas]
 
-            if name == "G":
+            if name in ("G", "GC"):
                 model_params, gaussian_params, gaussian_params_names = [], [], []
                 for n, p in module.named_parameters():
                     if n == '_xyz':
@@ -198,8 +239,12 @@ def training_loop(
             resume_data = load_network.load_network_pkl(f)
         print("loading optimizer states")
         for phase in phases:
-            phase.opt.load_state_dict(resume_data[f"{phase.name}_opt"])
-            phase.interval = resume_data[f"{phase.name}_interval"]
+            opt_key = f"{phase.name}_opt"
+            int_key = f"{phase.name}_interval"
+            if opt_key in resume_data:
+                phase.opt.load_state_dict(resume_data[opt_key])
+            if int_key in resume_data:
+                phase.interval = resume_data[int_key]
 
     # Export sample images.
     grid_size = None
@@ -207,7 +252,7 @@ def training_loop(
     grid_c = None
     if rank == 0:
         print('Exporting sample images...')
-        grid_size, images, labels = setup_snapshot_image_grid(training_set=training_set, gw=5, gh=5)
+        grid_size, images, labels = setup_snapshot_image_grid(training_set=training_set, gw=10, gh=10)
         save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0, 255], grid_size=grid_size)
         grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
@@ -355,7 +400,11 @@ def training_loop(
         snapshot_data = None
         if done or cur_tick % network_snapshot_ticks == 0:
             snapshot_data = dict(training_set_kwargs=dict(training_set_kwargs))
-            for name, module in [('G', G), ('D', D), ('G_ema', G_ema)]:
+            net_items = [('G', G), ('D', D), ('G_ema', G_ema)]
+            if C is not None:
+                net_items.insert(2, ('C', C))
+
+            for name, module in net_items:
                 if module is not None:
                     if num_gpus > 1:
                         pass

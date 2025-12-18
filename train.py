@@ -66,6 +66,9 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--knn_num_ks",       help="number of cluster center.",               type=int,   default=64)
 @click.option("--use_multivew_reg", help="compute grad for multiple views",         type=bool,  default=True)
 @click.option("--num_multiview",    help="number of renderings per training step",  type=int,   default=4)
+# Spectral-domain classifier (SSD-style) config.
+@click.option("--use_spec_cls",    help="Enable spectral-domain classifier (SSD)", type=bool,  default=False)
+@click.option("--spec_cls_scale",  help="Scale for spectral classifier logits",   type=float, default=0.4)
 # Optional job description
 @click.option("--desc",             help="String to include in result dir name",    type=str,   default="cgs_gan")
 @click.option("--job_id",           help="slurm job id",                            type=str,   default="")
@@ -99,6 +102,16 @@ def main(**kwargs):
     c.G_opt_kwargs.lr = opts.glr
     c.D_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0, 0.99], eps=1e-8)
     c.D_opt_kwargs.lr = opts.dlr
+
+    # Spectral-domain classifier (optional).
+    c.C_kwargs = dnnlib.EasyDict()
+    c.C_opt_kwargs = dnnlib.EasyDict()
+    if opts.use_spec_cls:
+        c.C_kwargs.class_name = "training.spectral_classifier.SpectralDomainClassifier"
+        # Keep output as a single logit by default (SSD used max(label_size, 1)).
+        c.C_kwargs.label_size = 0
+        c.C_kwargs.use_spectral_norm = True
+        # C is updated jointly with D (DC step), so it shares D optimizer settings.
 
     # Training Data
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)

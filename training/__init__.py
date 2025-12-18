@@ -8,4 +8,4 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-# empty
+from .spectral_classifier import SpectralDomainClassifier  # noqa: F401
