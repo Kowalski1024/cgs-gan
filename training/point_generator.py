@@ -125,6 +125,18 @@ class CoordInjection_const(torch.nn.Module):
         return x
 
 
+@persistence.persistent_class
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-8):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return x * rms * self.weight
+
+
 def get_scaled_directional_vector_from_quaternion(r, s, eps=0.001):
     # r, s: [B, npoints, c]
     N, npoints, _ = r.shape
@@ -228,6 +240,7 @@ class PointGenerator(nn.Module):
 
         self.anchors = nn.ModuleDict()
         self.gaussians = nn.ModuleDict()
+        self.max_pools = nn.ModuleList()
 
         self._out_keys = _out_keys
         for k in _out_keys.keys():
@@ -238,7 +251,7 @@ class PointGenerator(nn.Module):
         for k in _out_keys.keys():
             for i in range(self.n_transformer):
                 self.anchors[k].append(FullyConnectedLayer(
-                    in_features=get_features(i, self.upsample_ratio[i]),
+                    in_features=get_features(i, self.upsample_ratio[i]) * 2,
                     out_features=_out_keys[k].out_dim,
                     lr_multiplier=_out_keys[k].lr_mult,
                     activation="linear",
@@ -246,13 +259,32 @@ class PointGenerator(nn.Module):
                     bias_init=_out_keys[k].bias_init,
                 ))
                 self.gaussians[k].append(FullyConnectedLayer(
-                    in_features=get_features(i, self.upsample_ratio[i]),
+                    in_features=get_features(i, self.upsample_ratio[i]) * 2,
                     out_features=_out_keys[k].out_dim,
                     lr_multiplier=_out_keys[k].lr_mult,
                     activation="linear",
                     weight_init=_out_keys[k].weight_init,
                     bias_init=_out_keys[k].bias_init,
                 ))
+
+        for i in range(self.n_transformer):
+            self.max_pools.append(
+                nn.Sequential(
+                    FullyConnectedLayer(
+                        in_features=512,
+                        out_features=1024,
+                        lr_multiplier=1.0,
+                        activation="lrelu",
+                    ),
+                    FullyConnectedLayer(
+                        in_features=1024,
+                        out_features=get_features(i, self.upsample_ratio[i]),
+                        lr_multiplier=1.0,
+                        activation="linear",
+                    ),
+                    RMSNorm(get_features(i, self.upsample_ratio[i])),
+                )
+            )
 
         self.register_buffer("scale_init", torch.ones([3]) * options["scale_init"])
         self.register_buffer("scale_threshold", torch.ones([3]) * options["scale_threshold"])
@@ -292,6 +324,14 @@ class PointGenerator(nn.Module):
             # create features (512 points, 512 channels)
             current_features = transformer_out[i]
             upsampled_features = self.upsample_layers[i](current_features)
+
+            # global feature pooling
+            global_feature = torch.max(current_features, dim=1, keepdim=False)[0]
+            global_feature = self.max_pools[i](global_feature)
+            global_feature = global_feature.unsqueeze(1).expand(-1, upsampled_features.shape[1], -1)
+
+            # concatenate global feature
+            upsampled_features = torch.cat([upsampled_features, global_feature], dim=-1)
 
             # upsample anchors
             if not is_first_layer: # not for the first layer since it has not prior anchors
