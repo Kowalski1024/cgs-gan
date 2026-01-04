@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+from typing import Literal
 
 from dnnlib import EasyDict
 from training.networks_stylegan2 import FullyConnectedLayer
@@ -11,6 +12,25 @@ import math
 
 LOG_MIN = float(np.log(1e-6).round(2))
 LOG_MAX = float(np.log(0.02).round(2))
+
+
+def soft_log_anchor_filter(x, anchor: Literal["max", "min"] = "min", max_ratio=5.0):
+    if anchor == "max":
+        ref, _ = x.max(dim=-1, keepdim=True)
+        distance = ref - x
+        sign = -1.0
+        
+    elif anchor == "min":
+        ref, _ = x.min(dim=-1, keepdim=True)
+        distance = x - ref
+        sign = 1.0
+        
+    limit = math.log(max_ratio)
+    compressed_dist = limit * torch.tanh(distance / (limit + 1e-8))
+    
+    final_l = ref + (sign * compressed_dist)
+    
+    return final_l
 
 
 @persistence.persistent_class
@@ -96,6 +116,7 @@ class GaussAttrDecoder(nn.Module):
             raw = layer(feats)
             if key == "scale":
                 log_s = bounded_log_sigmoid(raw, LOG_MIN, LOG_MAX)
+                log_s = soft_log_anchor_filter(log_s)
                 out[key] = torch.exp(log_s)
             elif key == "opacity":
                 out[key] = torch.sigmoid(raw)
