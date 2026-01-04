@@ -40,11 +40,23 @@ class CGSGenerator(torch.nn.Module):
         self.custom_options = rendering_kwargs['custom_options']
 
         self.num_pts = self.custom_options['num_pts']
-        random_coords = torch.randn((self.num_pts, 3))
-        self._xyz = torch.nn.Parameter(random_coords * torch.rsqrt(torch.mean(random_coords ** 2, dim=1, keepdim=True) + 1e-8) * 0.5 * 0.6)
         self.point_gen = PointGenerator(w_dim=w_dim, options=self.custom_options)
         self.renderer_gaussian3d = Renderer(sh_degree=0)
         self.mapping_network = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.point_gen.num_ws + 1, **mapping_kwargs)
+
+        self.register_buffer('_xyz', self._fibonacci_sphere(self.num_pts))
+
+    @staticmethod
+    def _fibonacci_sphere(samples: int, scale: float = 1.0) -> torch.Tensor:
+        phi = torch.pi * (3.0 - torch.sqrt(torch.tensor(5.0)))
+        indices = torch.arange(samples)
+        y = 1 - (indices / float(samples - 1)) * 2
+        radius = torch.sqrt(1 - y * y)
+        theta = phi * indices
+        x = torch.cos(theta) * radius
+        z = torch.sin(theta) * radius
+        points = torch.stack([x, y, z], dim=-1)
+        return points * scale
 
     def mapping(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
         return self.mapping_network(z, torch.zeros_like(c), truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
@@ -60,8 +72,8 @@ class CGSGenerator(torch.nn.Module):
 
         focalx, focaly, near, far = intrinsics[:, 0,0], intrinsics[:, 1,1], 0.1, 10
 
-        sample_coordinates = torch.tanh(self._xyz.unsqueeze(0).repeat(len(ws), 1, 1))
-        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity, anchors = self.point_gen(sample_coordinates, ws)
+        sample_coordinates = self._xyz.unsqueeze(0).repeat(len(ws), 1, 1)
+        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(sample_coordinates, ws)
         dec_out = {}
         dec_out["sample_coordinates"] = sample_coordinates
         dec_out["scale"] = sample_scale
@@ -92,7 +104,7 @@ class CGSGenerator(torch.nn.Module):
                 ret_dict = self.renderer_gaussian3d.render(gaussian_params_i, cur_cam, bg=bg)
                 rendered_images.append(ret_dict["image"].unsqueeze(0))
 
-        return_dict = {'anchors': anchors[0], 'gaussian_params': gaussian_params}
+        return_dict = {'gaussian_params': gaussian_params}
         if render_output:
             return_dict["image"] = torch.cat(rendered_images, dim=0).to(ws.device)
         return return_dict

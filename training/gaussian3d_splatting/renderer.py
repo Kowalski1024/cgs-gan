@@ -82,10 +82,10 @@ class Renderer:
         self.max_sh_degree = 0
         
     def get_scaling(self, _scaling):
-        return self.scaling_activation(_scaling)
+        return _scaling
     
     def get_rotation(self, _rotation):
-        return self.rotation_activation(_rotation)
+        return _rotation
     
     def get_xyz(self):
         return self._xyz
@@ -94,7 +94,7 @@ class Renderer:
         return torch.cat((features_dc, features_rest), dim=1)
     
     def get_opacity(self, _opacity):
-        return self.opacity_activation(_opacity)
+        return _opacity
 
     def render(
         self,
@@ -139,6 +139,7 @@ class Renderer:
             campos=viewpoint_camera.camera_center.to(_xyz.device),
             prefiltered=False,
             debug=False,
+            antialiasing=False,
         )
 
         rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -170,7 +171,7 @@ class Renderer:
 
         # Rasterize visible Gaussians to image, obtain their radii (on screen).
         with torch.autocast(device_type=_xyz.device.type, dtype=torch.float32):
-            rendered_image, radii, rendered_depth, rendered_alpha = rasterizer(
+            rendered_image, radii, _ = rasterizer(
                 means3D=means3D,
                 means2D=means2D,
                 shs=shs,
@@ -181,6 +182,7 @@ class Renderer:
                 cov3D_precomp=cov3D_precomp,
             )
 
+        rendered_image = torch.clamp(rendered_image, 0.0, 1.0)
         rendered_image = rendered_image / 0.5 - 1.
         return {
             "image": rendered_image,

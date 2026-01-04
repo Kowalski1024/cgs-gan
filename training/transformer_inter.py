@@ -28,8 +28,10 @@ class AdaptiveNorm(nn.Module):
     ):
         super().__init__()
 
-        self.gamma = FullyConnectedLayer(w_dim, dim, activation='linear', weight_init=weight_init, bias_init=1.)
-        self.beta = FullyConnectedLayer(w_dim, dim, activation='linear', weight_init=weight_init, bias_init=0.)
+        self.gamma = nn.Linear(w_dim, dim)
+        self.beta = nn.Linear(w_dim, dim)
+        nn.init.constant_(self.gamma.bias, 1.0)
+        nn.init.constant_(self.beta.bias, 0.0)
         self.norm = InstanceNorm1d()
 
     def forward(self, x, w):
@@ -51,8 +53,8 @@ class MultiheadAttention(nn.Module):
         self.heads = heads
         
         self.attention = QKVMultiheadAttention(heads=heads)
-        self.c_qkv = FullyConnectedLayer(width, width * 3)
-        self.c_proj = FullyConnectedLayer(width, width)
+        self.c_qkv = nn.Linear(width, width * 3)
+        self.c_proj = nn.Linear(width, width)
 
     def forward(self, x):
         x = self.c_qkv(x)
@@ -67,8 +69,8 @@ class MLP(nn.Module):
         super().__init__()
         self.out_channels = width
         self.gelu = nn.GELU()
-        self.c_fc = FullyConnectedLayer(width, width * 4)
-        self.c_proj = FullyConnectedLayer(width * 4, width)
+        self.c_fc = nn.Linear(width, width * 4)
+        self.c_proj = nn.Linear(width * 4, width)
 
     def forward(self, x, w=None):
         return self.c_proj(self.gelu(self.c_fc(x)) * np.sqrt(2))
@@ -113,8 +115,10 @@ class ResidualAttentionBlock(nn.Module):
         self.mlp = MLP(width=width)
         self.ln_1 = AdaptiveNorm(width, w_dim=w_dim)
         self.ln_2 = AdaptiveNorm(width, w_dim=w_dim)
-        self.ls_1 = FullyConnectedLayer(w_dim, width, activation='linear', weight_init=0.)
-        self.ls_2 = FullyConnectedLayer(w_dim, width, activation='linear', weight_init=0.)
+        self.ls_1 = nn.Linear(w_dim, width)
+        self.ls_2 = nn.Linear(w_dim, width)
+        nn.init.zeros_(self.ls_1.weight)
+        nn.init.zeros_(self.ls_2.weight)
 
     def forward(self, x: torch.Tensor, w: torch.Tensor):
         x = x + self.attn(self.ln_1(x, w)) * self.ls_1(w)
