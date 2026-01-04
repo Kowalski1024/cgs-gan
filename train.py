@@ -64,6 +64,7 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--center_dists",     help="coeff of center dist.",                   type=float, default=1.0)
 @click.option("--knn_dists",        help="loss scale for knn dists.",               type=float, default=20.0)
 @click.option("--knn_num_ks",       help="number of cluster center.",               type=int,   default=64)
+@click.option("--dot_penalty",      help="loss scale for dot prod penalty.",        type=float, default=10.0)
 @click.option("--use_multivew_reg", help="compute grad for multiple views",         type=bool,  default=True)
 @click.option("--num_multiview",    help="number of renderings per training step",  type=int,   default=4)
 # Optional job description
@@ -95,9 +96,9 @@ def main(**kwargs):
     c.D_kwargs.disc_c_noise = opts.disc_c_noise
 
     # Optimizer
-    c.G_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0, 0.99], eps=1e-8)
+    c.G_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0.0, 0.99], eps=1e-8)
     c.G_opt_kwargs.lr = opts.glr
-    c.D_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0, 0.99], eps=1e-8)
+    c.D_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0.0, 0.99], eps=1e-8)
     c.D_opt_kwargs.lr = opts.dlr
 
     # Training Data
@@ -155,6 +156,7 @@ def main(**kwargs):
     c.loss_kwargs.loss_custom_options = {
         "knn_dists": opts.knn_dists,                    # coeff. of KNN distance
         "knn_num_ks": opts.knn_num_ks,                  # the number of KNN for calculating loss
+        "dot_penalty": opts.dot_penalty,                 # coeff. of dot penalty
         "center_dists": opts.center_dists,              # coeff. of center distance
         "is_resume": True if opts.resume is not None else False,
         "use_multivew_reg": opts.use_multivew_reg,
