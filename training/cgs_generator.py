@@ -14,6 +14,8 @@ from torch_utils import persistence
 from training.gaussian3d_splatting.custom_cam import CustomCam
 from training.networks_stylegan2 import MappingNetwork
 from training.gaussian3d_splatting.renderer import Renderer
+from torch_geometric.data import Data
+from torch_geometric.nn import knn_graph
 
 from training.point_generator import PointGenerator
 
@@ -73,7 +75,9 @@ class CGSGenerator(torch.nn.Module):
         focalx, focaly, near, far = intrinsics[:, 0,0], intrinsics[:, 1,1], 0.1, 10
 
         sample_coordinates = self._xyz.unsqueeze(0).repeat(len(ws), 1, 1)
-        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(sample_coordinates, ws)
+        batch = torch.arange(len(ws), device=ws.device).unsqueeze(1).repeat(1, sample_coordinates.size(1)).view(-1)
+        edge_index = knn_graph(sample_coordinates.view(-1, 3), k=6, batch=batch, loop=False)
+        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(sample_coordinates, edge_index, ws)
         dec_out = {}
         dec_out["sample_coordinates"] = sample_coordinates
         dec_out["scale"] = sample_scale
@@ -86,11 +90,12 @@ class CGSGenerator(torch.nn.Module):
         for batch_idx in range(len(ws)):
             gaussian_params_i = {}
             gaussian_params_i["_xyz"] = dec_out['sample_coordinates'][batch_idx]
-            gaussian_params_i["_features_dc"] = dec_out["color"][batch_idx].unsqueeze(1).contiguous() # self._features_dc # 3
-            gaussian_params_i["_features_rest"] = dec_out["color"][batch_idx].unsqueeze(1)[:, 0:0].contiguous() # self._features_rest # 3
+            # gaussian_params_i["_features_dc"] = dec_out["color"][batch_idx].unsqueeze(1).contiguous() # self._features_dc # 3
+            # gaussian_params_i["_features_rest"] = dec_out["color"][batch_idx].unsqueeze(1)[:, 0:0].contiguous() # self._features_rest # 3
             gaussian_params_i["_scaling"] = dec_out["scale"][batch_idx] # self._scaling # 3
             gaussian_params_i["_rotation"] = dec_out["rotation"][batch_idx] # self._rotation # 4
             gaussian_params_i["_opacity"] = dec_out["opacity"][batch_idx] # self._opacity # 1
+            gaussian_params_i["_color"] = dec_out["color"][batch_idx] # self._color # 3
             gaussian_params.append(gaussian_params_i)
 
             if render_output:

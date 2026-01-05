@@ -5,7 +5,7 @@ from typing import Literal
 
 from dnnlib import EasyDict
 from training.networks_stylegan2 import FullyConnectedLayer
-from training.transformer_inter import Transformer, MLP, AdaptiveNorm
+from training.transformer_inter import Transformer, ResidualMLPBlock
 from torch_utils import persistence
 import math
 
@@ -116,16 +116,16 @@ class GaussAttrDecoder(nn.Module):
             raw = layer(feats)
             if key == "scale":
                 log_s = bounded_log_sigmoid(raw, LOG_MIN, LOG_MAX)
-                log_s = soft_log_anchor_filter(log_s)
+                # log_s = soft_log_anchor_filter(log_s)
                 out[key] = torch.exp(log_s)
             elif key == "opacity":
                 out[key] = torch.sigmoid(raw)
             elif key == "rotation":
                 out[key] = nn.functional.normalize(raw, dim=-1)
             elif key == "color":
-                # color = torch.tanh(raw) * 1.1
-                # out[key] = (color + 1) / 2
-                out[key] = raw
+                color = torch.tanh(raw) * 1.1
+                out[key] = (color + 1) / 2
+                # out[key] = raw
 
         return out
 
@@ -183,17 +183,14 @@ class PointGenerator(nn.Module):
 
         self.attr_decoder = GaussAttrDecoder(512)
 
-        self.xyz_head = nn.Sequential(
-            nn.Linear(512, 512),
-            nn.LeakyReLU(inplace=True),
-            nn.Linear(512, 3),
-        )
+        self.xyz_head = nn.Linear(512, 3)
+
         nn.init.normal_(
             self.xyz_head[-1].weight, mean=0.0, std=float(0.01)
         )
         nn.init.constant_(self.xyz_head[-1].bias, 0.0)
 
-    def forward(self, pos, ws):
+    def forward(self, pos, edge_index, ws):
         B, num_points, C = pos.shape
 
         output_gaussians = GaussianScene(device=pos.device, batch_size=B)
@@ -202,19 +199,20 @@ class PointGenerator(nn.Module):
 
         x = self.conv_in(pos0) # positional encoding
 
-        transformer_out = self.transformer(x, ws)
+        transformer_out = self.transformer(x, pos0, edge_index, ws)
 
         for i in range(self.n_transformer):
             # create features (512 points, 512 channels)
-            current_features = transformer_out[i]
-            upsampled_features = self.upsample_layers[i](current_features)
+            current_features_x, current_features_t = transformer_out[i]
+            upsampled_features_x = self.upsample_layers[i](current_features_x)
+            upsampled_features_t = self.upsample_layers[i](current_features_t)
 
             acc = self.upsample_ratio_accum[i]
             pos_up = pos0.repeat_interleave(acc, dim=1)
-            pos_delta = torch.tanh(self.xyz_head(upsampled_features))
+            pos_delta = torch.tanh(self.xyz_head(upsampled_features_x))
             pos_level = pos_up + pos_delta
 
-            out_level = self.attr_decoder(upsampled_features)
+            out_level = self.attr_decoder(upsampled_features_t)
 
             # generate gaussians
             new_gaussian = EasyDict(xyz=pos_level, **out_level)

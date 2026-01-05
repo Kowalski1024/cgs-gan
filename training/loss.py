@@ -134,8 +134,9 @@ class StyleGAN2Loss(Loss):
             with torch.autograd.profiler.record_function('Dgen_forward'):
                 gen_result, _gen_ws = self.run_G(gen_z, gen_c, resolution=self.resolution, update_emas=True)
                 logger.add_tensor_stats("3dgs", "_xyz", gen_result["gaussian_params"][0]["_xyz"])
-                logger.add_tensor_stats("3dgs", "_features_dc", gen_result["gaussian_params"][0]["_features_dc"])
-                logger.add_tensor_stats("3dgs", "_scaling", gen_result["gaussian_params"][0]["_scaling"])
+                logger.add_tensor_stats("3dgs", "_color", gen_result["gaussian_params"][0]["_color"])
+                # logger.add_tensor_stats("3dgs", "_features_dc", gen_result["gaussian_params"][0]["_features_dc"])
+                # logger.add_tensor_stats("3dgs", "_scaling", gen_result["gaussian_params"][0]["_scaling"])
                 logger.add_tensor_stats("3dgs", "_rotation", gen_result["gaussian_params"][0]["_rotation"])
                 logger.add_tensor_stats("3dgs", "_opacity", gen_result["gaussian_params"][0]["_opacity"])
 

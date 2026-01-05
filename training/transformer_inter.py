@@ -4,6 +4,20 @@ from torch_utils import persistence
 import math
 import numpy as np
 from training.networks_stylegan2 import FullyConnectedLayer
+from torch_geometric import nn as gnn
+from torch_geometric.data import Data
+
+
+@persistence.persistent_class
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.scale = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        norm = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return norm * self.scale
 
 
 @persistence.persistent_class
@@ -73,7 +87,7 @@ class MLP(nn.Module):
         self.c_proj = nn.Linear(width * 4, width)
 
     def forward(self, x, w=None):
-        return self.c_proj(self.gelu(self.c_fc(x)) * np.sqrt(2))
+        return self.c_proj(self.gelu(self.c_fc(x)))
 
 
 @persistence.persistent_class
@@ -96,6 +110,69 @@ class QKVMultiheadAttention(nn.Module):
         wdtype = weight.dtype
         weight = torch.softmax(weight.float(), dim=-1).type(wdtype)
         return torch.einsum("bhts,bshc->bthc", weight, v).reshape(bs, n_ctx, -1)
+    
+
+class PointGNNConv(gnn.MessagePassing):
+    """Two_stage-style PointGNN conv.
+
+    Message: [pos_j - pos_i + delta_i, x_j]
+    """
+
+    def __init__(self, *, feat_dim: int):
+        super().__init__(aggr="max")
+
+        self.mlp_h = nn.Sequential(
+            nn.Linear(feat_dim, feat_dim // 2),
+            nn.LeakyReLU(inplace=True),
+            nn.Linear(feat_dim // 2, 3),
+            nn.Tanh(),
+        )
+
+        self.mlp_g = nn.Sequential(
+            nn.Linear(feat_dim + 3, feat_dim),
+            nn.LeakyReLU(inplace=True),
+            nn.Linear(feat_dim, feat_dim),
+        )
+
+        self.layer_scale = nn.Parameter(torch.ones(feat_dim) * 0.01)
+
+    def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index) -> torch.Tensor:
+        delta = self.mlp_h(x)
+        out = self.propagate(edge_index, x=x * self.layer_scale, pos=pos, delta=delta)
+        out = self.mlp_g(out)
+        return x + out
+
+    def message(
+        self,
+        pos_j: torch.Tensor,
+        pos_i: torch.Tensor,
+        x_j: torch.Tensor,
+        delta_i: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.cat([pos_j - pos_i + delta_i, x_j], dim=-1)
+    
+
+@persistence.persistent_class
+class ResidualGNNBlock(nn.Module):
+    def __init__(
+        self,
+        *,
+        width: int,
+        w_dim,
+    ):
+        super().__init__()
+        self.gnn = PointGNNConv(feat_dim=width)
+        self.ln_1 = AdaptiveNorm(width, w_dim=w_dim)
+        self.ls_1 = nn.Linear(w_dim, width)
+        nn.init.zeros_(self.ls_1.weight)
+
+    def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index, w: torch.Tensor):
+        B, num_points, C = x.shape
+        pos = pos.view(B * num_points, 3)
+        y = self.ln_1(x, w).view(B * num_points, C)
+        y = self.gnn(y, pos, edge_index).view(B, num_points, C)
+        x = x + y * self.ls_1(w)
+        return x
 
 
 @persistence.persistent_class
@@ -124,6 +201,25 @@ class ResidualAttentionBlock(nn.Module):
         x = x + self.attn(self.ln_1(x, w)) * self.ls_1(w)
         x = x + self.mlp(self.ln_2(x, w)) * self.ls_2(w)
         return x
+    
+
+@persistence.persistent_class
+class ResidualMLPBlock(nn.Module):
+    def __init__(
+        self,
+        *,
+        width: int,
+        w_dim,
+    ):
+        super().__init__()
+        self.mlp = MLP(width=width)
+        self.ln_1 = AdaptiveNorm(width, w_dim=w_dim)
+        self.ls_1 = nn.Linear(w_dim, width)
+        nn.init.zeros_(self.ls_1.weight)
+
+    def forward(self, x: torch.Tensor, w: torch.Tensor):
+        x = x + self.mlp(self.ln_1(x, w)) * self.ls_1(w)
+        return x
 
 
 @persistence.persistent_class
@@ -134,39 +230,58 @@ class Transformer(nn.Module):
             w_dim,
             width: int,
             layers: int,
-            num_first_layers=6,
             heads: int = 8,
     ):
         super().__init__()
         self.width = width
         self.layers = layers
-        self.resblocks = nn.ModuleList([
+        self.attn_resblocks = nn.ModuleList([
             ResidualAttentionBlock(
                 width=width,
                 heads=heads,
                 w_dim=w_dim
             )
-            for i in range(layers - 1)
+            for _ in range(layers)
         ])
-
-        self.first_layers = nn.ModuleList([
-            ResidualAttentionBlock(
+        self.gnn_resblocks = nn.ModuleList([
+            ResidualGNNBlock(
                 width=width,
-                heads=heads,
                 w_dim=w_dim
             )
-            for i in range(num_first_layers)
+            for _ in range(layers)
         ])
-        self.num_first_layers = num_first_layers
 
-    def forward(self, x: torch.Tensor, ws: torch.Tensor):
+        self.mlp = MLP(width=width)
+
+        self.global_conv = nn.Sequential(
+            nn.Linear(width, width),
+            nn.LeakyReLU(inplace=True),
+        )
+        self.fuse_global = nn.Sequential(
+            nn.Linear(width * 2, width),
+            nn.LeakyReLU(inplace=True),
+        )
+
+    def global_pooling(self, x: torch.Tensor) -> torch.Tensor:
+        g = x.max(dim=1).values
+        g = self.global_conv(g)
+        g = g.unsqueeze(1).expand(-1, x.shape[1], -1)
+        x = self.fuse_global(torch.cat([x, g], dim=-1))
+        return x
+
+    def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index, ws: torch.Tensor):
         results = []
 
-        for i in range(self.num_first_layers):
-            x = self.first_layers[i](x, ws)
-        results.append(x)
+        t = x
+        for gnn_resblock, attn_resblock in zip(self.gnn_resblocks, self.attn_resblocks):
+            x = gnn_resblock(x, pos, edge_index, ws)
+            
+            y = self.global_pooling(x)
+            t = (t + y) / np.sqrt(2)
 
-        for i in range(len(self.resblocks)):
-            x = self.resblocks[i](x, ws)
-            results.append(x)
+            t = attn_resblock(t, ws)
+
+            y = self.mlp(y, ws)
+            results.append((y ,t))
+
         return results

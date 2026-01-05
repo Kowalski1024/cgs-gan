@@ -64,7 +64,7 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--center_dists",     help="coeff of center dist.",                   type=float, default=1.0)
 @click.option("--knn_dists",        help="loss scale for knn dists.",               type=float, default=20.0)
 @click.option("--knn_num_ks",       help="number of cluster center.",               type=int,   default=64)
-@click.option("--dot_penalty",      help="loss scale for dot prod penalty.",        type=float, default=10.0)
+@click.option("--dot_penalty",      help="loss scale for dot prod penalty.",        type=float, default=0.0)
 @click.option("--use_multivew_reg", help="compute grad for multiple views",         type=bool,  default=True)
 @click.option("--num_multiview",    help="number of renderings per training step",  type=int,   default=4)
 # Optional job description

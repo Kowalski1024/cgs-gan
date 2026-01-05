@@ -106,11 +106,12 @@ class Renderer:
         compute_cov3D_python=False,
     ):
         _xyz = gaussian_params["_xyz"]
-        _features_dc = gaussian_params["_features_dc"]
-        _features_rest = gaussian_params["_features_rest"]
+        # _features_dc = gaussian_params["_features_dc"]
+        # _features_rest = gaussian_params["_features_rest"]
         _scaling = gaussian_params["_scaling"]
         _rotation = gaussian_params["_rotation"]
         _opacity = gaussian_params["_opacity"]
+        _color = gaussian_params["_color"]
 
         if bg is None:
             bg = self.bg_color.to(_xyz.device)
@@ -163,11 +164,11 @@ class Renderer:
         # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
         # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
         shs = None
-        colors_precomp = None
-        if colors_precomp is None:
-            shs = self.get_features(_features_dc, _features_rest)
-        else:
-            colors_precomp = override_color
+        colors_precomp = _color
+        # if colors_precomp is None:
+        #     shs = self.get_features(_features_dc, _features_rest)
+        # else:
+        #     colors_precomp = override_color
 
         # Rasterize visible Gaussians to image, obtain their radii (on screen).
         with torch.autocast(device_type=_xyz.device.type, dtype=torch.float32):
