@@ -163,7 +163,7 @@ def main(**kwargs):
         "num_multiview": opts.num_multiview
     }
     c.loss_kwargs.blur_init_sigma = 10 # Blur the images seen by the discriminator.
-    c.loss_kwargs.blur_fade_kimg = c.batch_size * opts.blur_fade_kimg / 32 # Fade out the blur during the first N kimg.
+    c.loss_kwargs.blur_fade_kimg = c.batch_size * opts.blur_fade_kimg / 16 # Fade out the blur during the first N kimg.
     c.loss_kwargs.resolution = c.training_set_kwargs.resolution
 
     # Resume.

@@ -100,8 +100,8 @@ class GaussAttrDecoder(nn.Module):
         )
 
         for key, layer in self.decoders.items():
-            if key == "scaling":
-                nn.init.xavier_uniform_(layer.weight, gain=0.3)
+            if key == "scale":
+                pass
             elif key == "rotation":
                 torch.nn.init.constant_(layer.bias, 0)
                 torch.nn.init.constant_(layer.bias[0], 1.0)
@@ -186,20 +186,20 @@ class PointGenerator(nn.Module):
         self.xyz_head = nn.Linear(512, 3)
 
         nn.init.normal_(
-            self.xyz_head[-1].weight, mean=0.0, std=float(0.01)
+            self.xyz_head.weight, mean=0.0, std=float(0.005)
         )
-        nn.init.constant_(self.xyz_head[-1].bias, 0.0)
+        nn.init.constant_(self.xyz_head.bias, 0.0)
 
     def forward(self, pos, edge_index, ws):
         B, num_points, C = pos.shape
 
         output_gaussians = GaussianScene(device=pos.device, batch_size=B)
 
-        pos0 = pos * 0.1
+        # pos0 = pos * 0.1
 
-        x = self.conv_in(pos0) # positional encoding
+        x = self.conv_in(pos) # positional encoding
 
-        transformer_out = self.transformer(x, pos0, edge_index, ws)
+        transformer_out = self.transformer(x, pos, edge_index, ws)
 
         for i in range(self.n_transformer):
             # create features (512 points, 512 channels)
@@ -207,10 +207,10 @@ class PointGenerator(nn.Module):
             upsampled_features_x = self.upsample_layers[i](current_features_x)
             upsampled_features_t = self.upsample_layers[i](current_features_t)
 
-            acc = self.upsample_ratio_accum[i]
-            pos_up = pos0.repeat_interleave(acc, dim=1)
+            # acc = self.upsample_ratio_accum[i]
+            # pos_up = pos0.repeat_interleave(acc, dim=1)
             pos_delta = torch.tanh(self.xyz_head(upsampled_features_x))
-            pos_level = pos_up + pos_delta
+            pos_level = pos_delta
 
             out_level = self.attr_decoder(upsampled_features_t)
 

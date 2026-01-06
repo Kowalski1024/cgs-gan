@@ -6,6 +6,7 @@ import numpy as np
 from training.networks_stylegan2 import FullyConnectedLayer
 from torch_geometric import nn as gnn
 from torch_geometric.data import Data
+from torch_geometric.nn.models.linkx import SparseLinear
 
 
 @persistence.persistent_class
@@ -91,6 +92,34 @@ class MLP(nn.Module):
 
 
 @persistence.persistent_class
+class AdaINMLP(nn.Module):
+    def __init__(self, width: int, w_dim: int):
+        super().__init__()
+        self.out_channels = width
+        self.lrelu = nn.LeakyReLU()
+        self.c_fc = nn.Linear(width, width * 4, bias=False)
+        self.c_proj = nn.Linear(width * 4, width, bias=False)
+
+        self.bias_1 = nn.Parameter(torch.zeros(width * 4))
+        self.bias_2 = nn.Parameter(torch.zeros(width))
+
+        self.gamma_1 = nn.Linear(w_dim, width)
+        self.gamma_2 = nn.Linear(w_dim, width * 4)
+
+        self.gamma_1.bias.data.fill_(1.0)
+        self.gamma_2.bias.data.fill_(1.0)
+
+    def forward(self, x, w):
+        x = x * self.gamma_1(w)
+        x = self.c_fc(x)
+        x = x / (x.std(dim=-1, keepdim=True) + 1e-8) + self.bias_1
+        x = self.lrelu(x)
+        x = x * self.gamma_2(w)
+        x = self.c_proj(x)
+        x = x / (x.std(dim=-1, keepdim=True) + 1e-8) + self.bias_2
+        return x
+
+@persistence.persistent_class
 class QKVMultiheadAttention(nn.Module):
     def __init__(self, *, heads: int):
         super().__init__()
@@ -122,23 +151,17 @@ class PointGNNConv(gnn.MessagePassing):
         super().__init__(aggr="max")
 
         self.mlp_h = nn.Sequential(
-            nn.Linear(feat_dim, feat_dim // 2),
-            nn.LeakyReLU(inplace=True),
-            nn.Linear(feat_dim // 2, 3),
+            nn.Linear(feat_dim, 3),
             nn.Tanh(),
         )
 
         self.mlp_g = nn.Sequential(
             nn.Linear(feat_dim + 3, feat_dim),
-            nn.LeakyReLU(inplace=True),
-            nn.Linear(feat_dim, feat_dim),
         )
-
-        self.layer_scale = nn.Parameter(torch.ones(feat_dim) * 0.01)
 
     def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index) -> torch.Tensor:
         delta = self.mlp_h(x)
-        out = self.propagate(edge_index, x=x * self.layer_scale, pos=pos, delta=delta)
+        out = self.propagate(edge_index, x=x, pos=pos, delta=delta)
         out = self.mlp_g(out)
         return x + out
 
@@ -162,7 +185,7 @@ class ResidualGNNBlock(nn.Module):
     ):
         super().__init__()
         self.gnn = PointGNNConv(feat_dim=width)
-        self.ln_1 = AdaptiveNorm(width, w_dim=w_dim)
+        self.ln_1 = AdaINMLP(width, w_dim=w_dim)
         self.ls_1 = nn.Linear(w_dim, width)
         nn.init.zeros_(self.ls_1.weight)
 
@@ -172,6 +195,68 @@ class ResidualGNNBlock(nn.Module):
         y = self.ln_1(x, w).view(B * num_points, C)
         y = self.gnn(y, pos, edge_index).view(B, num_points, C)
         x = x + y * self.ls_1(w)
+        return x
+
+
+class LINKXConv(nn.Module):
+    def __init__(
+        self,
+        *,
+        num_nodes: int,
+        width: int,
+
+    ):
+        super().__init__()
+
+        self.edge_lin = SparseLinear(num_nodes, width)
+
+        self.cat_lin1 = torch.nn.Linear(width, width)
+        self.cat_lin2 = torch.nn.Linear(width, width)
+
+        self.leakyrelu = nn.LeakyReLU(inplace=True)
+
+
+    def forward(self, x: torch.Tensor, edge_index) -> torch.Tensor:
+        N = x.size(1)
+        src, dst = edge_index  # [2, E]
+
+        mask0 = (src < N) & (dst < N)
+        edge_index0 = edge_index[:, mask0] 
+        out = self.edge_lin(edge_index0, None)
+
+        out = out + self.cat_lin1(out)
+
+        out = out.unsqueeze(0)
+        out = out + x
+        out = out + self.cat_lin2(out)
+
+        out = self.leakyrelu(out)
+
+        return x
+
+
+class ResidualLINKXBlock(nn.Module):
+    def __init__(
+        self,
+        *,
+        width: int,
+        w_dim,
+        num_nodes: int,
+    ):
+        super().__init__()
+        self.gnn = LINKXConv(num_nodes=num_nodes, width=width)
+        self.mlp_1 = AdaINMLP(width=width, w_dim=w_dim)
+        self.mlp_2 = AdaINMLP(width=width, w_dim=w_dim)
+        self.ls_1 = nn.Linear(w_dim, width)
+        self.ls_2 = nn.Linear(w_dim, width)
+        nn.init.zeros_(self.ls_1.weight)
+        nn.init.zeros_(self.ls_2.weight)
+
+    def forward(self, x: torch.Tensor, edge_index, w: torch.Tensor):
+        B, num_points, C = x.shape
+        x = x + self.mlp_1(self.gnn(x, edge_index), w) * self.ls_1(w)
+        x = x + self.mlp_2(x, w) * self.ls_2(w)
+        
         return x
 
 
@@ -231,15 +316,34 @@ class Transformer(nn.Module):
             width: int,
             layers: int,
             heads: int = 8,
+            num_first_blocks: int = 6,
     ):
         super().__init__()
         self.width = width
         self.layers = layers
-        self.attn_resblocks = nn.ModuleList([
-            ResidualAttentionBlock(
+        self.num_first_blocks = num_first_blocks
+        self.linkx_resblocks_first = nn.ModuleList([
+            ResidualLINKXBlock(
                 width=width,
-                heads=heads,
+                w_dim=w_dim,
+                num_nodes=512,
+            )
+            for _ in range(num_first_blocks)
+        ])
+        self.gnn_resblocks_first = nn.ModuleList([
+            ResidualGNNBlock(
+                width=width,
                 w_dim=w_dim
+            )
+            for _ in range(num_first_blocks)
+        ])
+
+
+        self.linkx_resblocks = nn.ModuleList([
+            ResidualLINKXBlock(
+                width=width,
+                w_dim=w_dim,
+                num_nodes=512,
             )
             for _ in range(layers)
         ])
@@ -251,7 +355,9 @@ class Transformer(nn.Module):
             for _ in range(layers)
         ])
 
-        self.mlp = MLP(width=width)
+        self.mlp = AdaINMLP(width=width, w_dim=w_dim)
+        self.norm = InstanceNorm1d()
+        self.lrelu = nn.LeakyReLU(inplace=True)
 
         self.global_conv = nn.Sequential(
             nn.Linear(width, width),
@@ -272,16 +378,21 @@ class Transformer(nn.Module):
     def forward(self, x: torch.Tensor, pos: torch.Tensor, edge_index, ws: torch.Tensor):
         results = []
 
+        for i in range(self.num_first_blocks):
+            x = self.linkx_resblocks_first[i](x, edge_index, ws)
+
         t = x
-        for gnn_resblock, attn_resblock in zip(self.gnn_resblocks, self.attn_resblocks):
-            x = gnn_resblock(x, pos, edge_index, ws)
+
+        for i in range(self.layers):
+            x = self.gnn_resblocks[i](x, pos, edge_index, ws)
             
             y = self.global_pooling(x)
             t = (t + y) / np.sqrt(2)
 
-            t = attn_resblock(t, ws)
+            t = self.linkx_resblocks[i](t, edge_index, ws)
 
-            y = self.mlp(y, ws)
+            y = self.lrelu(self.mlp(y, ws))
+            y = self.norm(y)
             results.append((y ,t))
 
         return results

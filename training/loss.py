@@ -126,7 +126,7 @@ class StyleGAN2Loss(Loss):
 
             with torch.autograd.profiler.record_function('Gmain_backward'):
                 (loss_Gmain.mean().mul(gain)  + loss_dot.mean() * self.coeffs["dot_penalty"]).backward()
-                clip_grad_norm_(self.G.parameters(), max_norm=20)
+                # clip_grad_norm_(self.G.parameters(), max_norm=20)
 
         # Dmain: Minimize logits for generated images.
         loss_Dgen = 0
@@ -136,7 +136,7 @@ class StyleGAN2Loss(Loss):
                 logger.add_tensor_stats("3dgs", "_xyz", gen_result["gaussian_params"][0]["_xyz"])
                 logger.add_tensor_stats("3dgs", "_color", gen_result["gaussian_params"][0]["_color"])
                 # logger.add_tensor_stats("3dgs", "_features_dc", gen_result["gaussian_params"][0]["_features_dc"])
-                # logger.add_tensor_stats("3dgs", "_scaling", gen_result["gaussian_params"][0]["_scaling"])
+                logger.add_tensor_stats("3dgs", "_scaling", gen_result["gaussian_params"][0]["_scaling"])
                 logger.add_tensor_stats("3dgs", "_rotation", gen_result["gaussian_params"][0]["_rotation"])
                 logger.add_tensor_stats("3dgs", "_opacity", gen_result["gaussian_params"][0]["_opacity"])
 
@@ -147,7 +147,7 @@ class StyleGAN2Loss(Loss):
                 
             with torch.autograd.profiler.record_function('Dgen_backward'):
                 (loss_Dgen).mean().mul(gain).backward() # Do not use contrastive loss for D_gen
-                clip_grad_norm_(self.D.parameters(), max_norm=5)
+                # clip_grad_norm_(self.D.parameters(), max_norm=5)
 
         # Dmain: Maximize logits for real images.
         # Dr1: Apply R1 regularization.
@@ -178,7 +178,7 @@ class StyleGAN2Loss(Loss):
 
             with torch.autograd.profiler.record_function(name + '_backward'):
                 (loss_Dreal + loss_Dr1).mean().mul(gain).backward()
-                clip_grad_norm_(self.D.parameters(), max_norm=5)
+                # clip_grad_norm_(self.D.parameters(), max_norm=5)
               
 
 def knn_distance(pos, k):
