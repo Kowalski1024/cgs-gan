@@ -95,9 +95,9 @@ def main(**kwargs):
     c.D_kwargs.disc_c_noise = opts.disc_c_noise
 
     # Optimizer
-    c.G_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0, 0.99], eps=1e-8)
+    c.G_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0.0, 0.99], eps=1e-8)
     c.G_opt_kwargs.lr = opts.glr
-    c.D_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0, 0.99], eps=1e-8)
+    c.D_opt_kwargs = dnnlib.EasyDict(class_name="torch.optim.Adam", betas=[0.0, 0.99], eps=1e-8)
     c.D_opt_kwargs.lr = opts.dlr
 
     # Training Data
@@ -159,7 +159,7 @@ def main(**kwargs):
         "knn_dists": opts.knn_dists,                    # coeff. of KNN distance
         "knn_num_ks": opts.knn_num_ks,                  # the number of KNN for calculating loss
         "center_dists": opts.center_dists,              # coeff. of center distance
-        "position_reg": 1.0,
+        "position_reg": 0.03,
         "is_resume": True if opts.resume is not None else False,
         "use_multivew_reg": opts.use_multivew_reg,
         "num_multiview": opts.num_multiview

@@ -24,7 +24,7 @@ def getProjectionMatrix(znear, zfar, fovX, fovY):
 
 
 class CustomCam:
-    def __init__(self, width, height, fovy, fovx, extr, znear=0.01, zfar=10):
+    def __init__(self, width, height, fovy, fovx, extr, znear=0.01, zfar=100):
         self.image_width = width
         self.image_height = height
         self.FoVy = fovy

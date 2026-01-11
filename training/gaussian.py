@@ -47,8 +47,7 @@ class GaussianDecoder(nn.Module):
             layer = nn.Linear(hidden_channles, channels)
 
             if key == "scaling":
-                # torch.nn.init.constant_(layer.bias, -5.0)
-                self.scaling_modulator = nn.Linear(hidden_channles, 3)
+                torch.nn.init.constant_(layer.bias, -5.0)
             elif key == "rotation":
                 torch.nn.init.constant_(layer.bias, 0)
                 torch.nn.init.constant_(layer.bias[0], 1.0)
@@ -66,20 +65,11 @@ class GaussianDecoder(nn.Module):
             if k == "rotation":
                 v = torch.nn.functional.normalize(v, dim=-1)
             elif k == "scaling":
-                scale_base = trunc_exp(v - 4.0)
-                scale_base = torch.clamp(scale_base, min=1e-4, max=0.03)
+                scale_base = trunc_exp(v)
+                scale_base = torch.clamp(scale_base, min=1e-6, max=0.02)
 
                 # modulator = self.scaling_modulator(x)
                 v = scale_base # * torch.sigmoid(modulator)
-
-                if (v < 0.0).any():
-                    print("WARNING: Non-positive scales detected!")
-
-                if torch.isinf(v).any():
-                    print("CRITICAL ERROR: Infs in final scales before returning!")
-
-                if torch.isnan(v).any():
-                    print("CRITICAL ERROR: NaNs in final scales before returning!")
             elif k == "opacity":
                 v = torch.sigmoid(v)
             elif k == "shs":

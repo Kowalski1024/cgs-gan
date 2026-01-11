@@ -125,7 +125,7 @@ class StyleGAN2Loss(Loss):
 
             with torch.autograd.profiler.record_function('Gmain_backward'):
                 ((loss_Gmain).mean().mul(gain) + position_loss * self.coeffs["position_reg"]).backward()
-                clip_grad_norm_(self.G.parameters(), max_norm=20)
+                # clip_grad_norm_(self.G.parameters(), max_norm=20)
 
         # Dmain: Minimize logits for generated images.
         loss_Dgen = 0
@@ -145,7 +145,7 @@ class StyleGAN2Loss(Loss):
                 
             with torch.autograd.profiler.record_function('Dgen_backward'):
                 (loss_Dgen).mean().mul(gain).backward() # Do not use contrastive loss for D_gen
-                clip_grad_norm_(self.D.parameters(), max_norm=5)
+                # clip_grad_norm_(self.D.parameters(), max_norm=5)
 
         # Dmain: Maximize logits for real images.
         # Dr1: Apply R1 regularization.
@@ -176,7 +176,7 @@ class StyleGAN2Loss(Loss):
 
             with torch.autograd.profiler.record_function(name + '_backward'):
                 (loss_Dreal + loss_Dr1).mean().mul(gain).backward()
-                clip_grad_norm_(self.D.parameters(), max_norm=5)
+                # clip_grad_norm_(self.D.parameters(), max_norm=5)
               
 
 def knn_distance(pos, k):

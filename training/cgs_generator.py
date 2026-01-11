@@ -19,7 +19,21 @@ from training.gnn_point_generator import PointGenerator
 from torch_sparse import SparseTensor
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
-import rff
+import numpy as np
+from training.topology import TopologyFactory
+
+
+class GaussianEncoding(torch.nn.Module):
+    """Fourier features like in f.py (cos/sin of random projections)."""
+
+    def __init__(self, sigma: float, input_size: int, encoded_size: int):
+        super().__init__()
+        b = torch.randn((encoded_size, input_size)) * sigma
+        self.register_buffer("b", b)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        vp = 2 * np.pi * x @ self.b.t()
+        return torch.cat((torch.cos(vp), torch.sin(vp)), dim=-1)
 
 
 @persistence.persistent_class
@@ -42,18 +56,20 @@ class CGSGenerator(torch.nn.Module):
         self.resolution = img_resolution
         self.rendering_kwargs = rendering_kwargs
         self.custom_options = rendering_kwargs['custom_options']
+        icosahedron = TopologyFactory.precompute_icosahedron_stack(max_level=5)[5]
+        self.custom_options['num_pts'] = icosahedron.verts.shape[0]
 
         self.num_pts = self.custom_options['num_pts']
         self.point_gen = PointGenerator(w_dim=w_dim, options=self.custom_options)
         self.renderer_gaussian3d = Renderer(sh_degree=0)
         self.mapping_network = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.point_gen.num_ws + 1, **mapping_kwargs)
 
-        self.encoder = rff.layers.GaussianEncoding(
+        self.encoder = GaussianEncoding(
             sigma=10.0, input_size=3, encoded_size=128 // 2
         )
 
-        self.register_buffer("sphere", self._fibonacci_sphere(self.num_pts, 1.0))
-        self.register_buffer("edge_index", knn_graph(self.sphere, k=6, batch=None))
+        self.register_buffer("sphere", icosahedron.verts)
+        self.register_buffer("edge_index", icosahedron.dense_edge_index)
 
     @staticmethod
     def _fibonacci_sphere(samples=1000, scale=1.0):
@@ -88,8 +104,8 @@ class CGSGenerator(torch.nn.Module):
         fovy = 2 * torch.atan(intrinsics[0, 1, 2] / intrinsics[0, 1, 1])
 
         pos = self.sphere
-        edge_index = SparseTensor.from_edge_index(self.edge_index)
-        encoded_pos = self.encoder(pos)
+        edge_index = self.edge_index
+        encoded_pos = self.encoder(pos).unsqueeze(0).expand(len(ws), -1, -1)
 
         sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(pos, encoded_pos, edge_index, ws)
         dec_out = {}
