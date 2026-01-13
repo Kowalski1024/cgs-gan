@@ -187,6 +187,75 @@ class LINKX(nn.Module):
             
         return out
 
+class MeshConv(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.channels = channels
+
+        # Weight: [Out, In, 2]   (self, neighbor)
+        self.weight = nn.Parameter(torch.randn(channels, channels, 2))
+        self.bias = nn.Parameter(torch.zeros(channels))
+
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, x, edge_index):
+        x_ = x
+        x = x.permute(0, 2, 1)  # [B, C, N]
+        B, C, N = x.shape
+
+        # -------------------------------------------------
+        # 1. Neighbor aggregation
+        # -------------------------------------------------
+        feat_self = x
+
+        x_perm = x.permute(0, 2, 1)  # [B, N, C]
+        x_neigh = x_perm[:, edge_index]  # [B, N, K, C]
+        x_neigh = x_neigh.mean(dim=2)          # [B, N, C]
+        feat_neigh = x_neigh.permute(0, 2, 1)  # [B, C, N]
+
+        # -------------------------------------------------
+        # 2. Convolution (shared weights)
+        # -------------------------------------------------
+        w_self = self.weight[:, :, 0].unsqueeze(0).expand(B, -1, -1)
+        out = torch.bmm(w_self, feat_self)
+
+        w_neigh = self.weight[:, :, 1].unsqueeze(0).expand(B, -1, -1)
+        out = out + torch.bmm(w_neigh, feat_neigh)
+
+        # -------------------------------------------------
+        # 3. Bias
+        # -------------------------------------------------
+        out = out + self.bias.view(1, -1, 1)
+        out = out.permute(0, 2, 1)  # [B, N, C]
+        out = out + x_
+
+        return out
+        
+class BlockTest(nn.Module):
+    def __init__(self, in_channels, out_channels, w_dim):
+        super().__init__()
+        self.conv1 = MeshConv(in_channels)
+        self.conv2 = SynthesisLayer(out_channels, out_channels, w_dim)
+        self.conv3 = SynthesisLayer(out_channels, out_channels, w_dim)
+        self.conv4 = SynthesisLayer(out_channels, out_channels, w_dim)
+        self.activation = nn.LeakyReLU(inplace=True)
+
+    def forward(self, x, edge_index, w):
+        x = self.conv1(x, edge_index)
+        x = self.activation(x)
+        x = self.conv2(x, w)
+        x = self.conv3(x, w)
+        x = self.conv4(x, w)
+        return x
+
+
 class PointGNNConv(nn.Module):
     r"""The PointGNN operator from the `"Point-GNN: Graph Neural Network for
     3D Object Detection in a Point Cloud" <https://arxiv.org/abs/2003.01251>`_
@@ -203,8 +272,8 @@ class PointGNNConv(nn.Module):
 
         self.mlp_h = nn.ModuleList(
             [
-                SynthesisLayer(channels, channels // 2, z_dim),
-                SynthesisLayer(channels // 2, 3, z_dim, activation=nn.Tanh()),
+                # SynthesisLayer(channels, channels // 2, z_dim),
+                SynthesisLayer(channels, 3, z_dim, activation=nn.Tanh()),
             ]
         )
 
@@ -282,25 +351,26 @@ class CloudGenerator(nn.Module):
         self.synthetic_block2 = PointGNNConv(128, 128, z_dim)
         self.synthetic_block3 = PointGNNConv(128, 128, z_dim)
         # self.synthetic_block8 = PointGNNConv(128, 128, z_dim)
-        self.synthetic_block4 = LINKX(num_pts, 256, 256, 256, 3, z_dim)
-        self.synthetic_block5 = LINKX(num_pts, 256, 256, 256, 3, z_dim)
-        self.synthetic_block6 = LINKX(num_pts, 256, 256, 256, 3, z_dim)
-        self.synthetic_block7 = LINKX(num_pts, 256, 256, 256, 3, z_dim)
+        self.synthetic_block4 = BlockTest(256, 256, z_dim)
+        self.synthetic_block5 = BlockTest(256, 256, z_dim)
+        self.synthetic_block6 = BlockTest(256, 256, z_dim)
+        self.synthetic_block7 = BlockTest(256, 256, z_dim)
 
         self.layer_1 = SynthesisLayer(channels * 2, channels, z_dim, noise=False)
         self.layer_2 = SynthesisLayer(channels, channels // 2, z_dim, noise=False)
 
     def forward(self, pos, x, edge_index, batch, w):
+        x_ = x
         x = self.synthetic_block1(x, pos, edge_index, w[:, 0])
         x = self.synthetic_block2(x, pos, edge_index, w[:, 0])
         x = self.synthetic_block3(x, pos, edge_index, w[:, 0])
         # x = self.synthetic_block8(x, edge_index, w[:, 0])
 
-        h, _ = x.max(dim=1)  # [B, C]
-        h = self.global_conv(h)  # [B, C]
-        h = h.unsqueeze(1).expand(-1, x.size(1), -1)  # [B, N, C]
+        # h, _ = x.max(dim=1)  # [B, C]
+        # h = self.global_conv(h)  # [B, C]
+        # h = h.unsqueeze(1).expand(-1, x.size(1), -1)  # [B, N, C]
 
-        x = torch.cat([x, h], dim=-1)
+        x = torch.cat([x, x_], dim=-1)
         new_pos = self.layer_1(x, w[:, 0])
         new_pos = self.layer_2(new_pos, w[:, 0])
         new_pos = self.tail(new_pos)
