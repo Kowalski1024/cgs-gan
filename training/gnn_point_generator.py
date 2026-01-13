@@ -196,6 +196,8 @@ class MeshConv(nn.Module):
         self.weight = nn.Parameter(torch.randn(channels, channels, 2))
         self.bias = nn.Parameter(torch.zeros(channels))
 
+        self.act = nn.LeakyReLU(inplace=True)
+
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -206,7 +208,6 @@ class MeshConv(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x, edge_index):
-        x_ = x
         x = x.permute(0, 2, 1)  # [B, C, N]
         B, C, N = x.shape
 
@@ -217,7 +218,7 @@ class MeshConv(nn.Module):
 
         x_perm = x.permute(0, 2, 1)  # [B, N, C]
         x_neigh = x_perm[:, edge_index]  # [B, N, K, C]
-        x_neigh = x_neigh.mean(dim=2)          # [B, N, C]
+        x_neigh, _ = x_neigh.max(dim=2)          # [B, N, C]
         feat_neigh = x_neigh.permute(0, 2, 1)  # [B, C, N]
 
         # -------------------------------------------------
@@ -234,8 +235,8 @@ class MeshConv(nn.Module):
         # -------------------------------------------------
         out = out + self.bias.view(1, -1, 1)
         out = out.permute(0, 2, 1)  # [B, N, C]
-        out = out + x_
 
+        out = self.act(out)
         return out
         
 class BlockTest(nn.Module):
@@ -243,17 +244,28 @@ class BlockTest(nn.Module):
         super().__init__()
         self.conv1 = MeshConv(in_channels)
         self.conv2 = SynthesisLayer(out_channels, out_channels, w_dim)
-        self.conv3 = SynthesisLayer(out_channels, out_channels, w_dim)
-        self.conv4 = SynthesisLayer(out_channels, out_channels, w_dim)
+        self.conv3 = SynthesisLayer(out_channels, out_channels, w_dim, activation=nn.Identity())
         self.activation = nn.LeakyReLU(inplace=True)
 
     def forward(self, x, edge_index, w):
+        x_ = x
         x = self.conv1(x, edge_index)
-        x = self.activation(x)
         x = self.conv2(x, w)
         x = self.conv3(x, w)
-        x = self.conv4(x, w)
+        x = x + x_
+        x = self.activation(x)
         return x
+
+
+class PixelNorm(nn.Module):
+    def __init__(self, epsilon=1e-8):
+        super().__init__()
+        self.epsilon = epsilon
+
+    def forward(self, x):
+        # x: [B, N, C]
+        # Normalize over the Channel dimension (dim=2)
+        return x * torch.rsqrt(torch.mean(x ** 2, dim=2, keepdim=True) + self.epsilon)
 
 
 class PointGNNConv(nn.Module):
@@ -279,10 +291,12 @@ class PointGNNConv(nn.Module):
 
         self.mlp_g = nn.ModuleList(
             [
-                SynthesisLayer(channels + 3, channels, z_dim),
-                SynthesisLayer(channels, channels, z_dim),
+                SynthesisLayer(channels + 12, channels, z_dim),
+                SynthesisLayer(channels, channels, z_dim, activation=nn.Identity()),
             ]
         )
+        self.act = nn.LeakyReLU(inplace=True)
+        self.norm = PixelNorm()
 
         self.reset_parameters()
 
@@ -306,16 +320,23 @@ class PointGNNConv(nn.Module):
         # Formula: pos_j - (pos_i - delta_i)  ==> (pos_j - pos_i) + delta_i
         rel_pos = (pos[edge_index] - pos.unsqueeze(1)).unsqueeze(0)  # [1, N, 6, 3]
         rel_pos = rel_pos + delta.unsqueeze(2)  # [B, N, 6, 3]
-        pos_aggr, _ = rel_pos.max(dim=2)  # [B, N, 3]
+        pos_mean = rel_pos.mean(dim=2)  # [B, N, 3]
+        pos_std = rel_pos.std(dim=2)    # [B, N, 3]
+        pos_min, _ = rel_pos.min(dim=2)  # [B, N, 3]
+        pos_max, _ = rel_pos.max(dim=2)  # [B, N, 3]
         
         # --- 4. Fusion ---
         # Now we concat small tensors [N, 3] and [N, C] -> [N, C+3]
-        out = torch.cat([pos_aggr, x_aggr], dim=-1)
+        out = torch.cat([pos_min, pos_max, pos_mean, pos_std, x_aggr], dim=-1)
+
+        out = self.norm(out)
         
         for i, layer in enumerate(self.mlp_g):
             out = layer(out, w)
             
-        return x + out
+        out = x + out
+        out = self.act(out)
+        return out
 
     def __repr__(self) -> str:
         return (
