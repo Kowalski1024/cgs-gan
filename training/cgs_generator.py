@@ -20,20 +20,6 @@ from torch_sparse import SparseTensor
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
 import numpy as np
-from training.topology import TopologyFactory
-
-
-class GaussianEncoding(torch.nn.Module):
-    """Fourier features like in f.py (cos/sin of random projections)."""
-
-    def __init__(self, sigma: float, input_size: int, encoded_size: int):
-        super().__init__()
-        b = torch.randn((encoded_size, input_size)) * sigma
-        self.register_buffer("b", b)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        vp = 2 * np.pi * x @ self.b.t()
-        return torch.cat((torch.cos(vp), torch.sin(vp)), dim=-1)
 
 
 @persistence.persistent_class
@@ -56,37 +42,10 @@ class CGSGenerator(torch.nn.Module):
         self.resolution = img_resolution
         self.rendering_kwargs = rendering_kwargs
         self.custom_options = rendering_kwargs['custom_options']
-        icosahedron = TopologyFactory.precompute_icosahedron_stack(max_level=5)[5]
-        self.custom_options['num_pts'] = icosahedron.verts.shape[0]
 
-        self.num_pts = self.custom_options['num_pts']
         self.point_gen = PointGenerator(w_dim=w_dim, options=self.custom_options)
         self.renderer_gaussian3d = Renderer(sh_degree=0)
         self.mapping_network = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.point_gen.num_ws + 1, **mapping_kwargs)
-
-        self.encoder = GaussianEncoding(
-            sigma=10.0, input_size=3, encoded_size=128 // 2
-        )
-
-        self.register_buffer("sphere", icosahedron.verts)
-        self.register_buffer("edge_index", icosahedron.dense_edge_index)
-
-    @staticmethod
-    def _fibonacci_sphere(samples=1000, scale=1.0):
-        phi = torch.pi * (3.0 - torch.sqrt(torch.tensor(5.0)))
-
-        indices = torch.arange(samples)
-        y = 1 - (indices / float(samples - 1)) * 2
-        radius = torch.sqrt(1 - y * y)
-
-        theta = phi * indices
-
-        x = torch.cos(theta) * radius
-        z = torch.sin(theta) * radius
-
-        points = torch.stack([x, y, z], dim=-1)
-
-        return points * scale
 
     def mapping(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
         return self.mapping_network(z, torch.zeros_like(c), truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
@@ -103,11 +62,7 @@ class CGSGenerator(torch.nn.Module):
         fovx = 2 * torch.atan(intrinsics[0, 0, 2] / intrinsics[0, 0, 0])
         fovy = 2 * torch.atan(intrinsics[0, 1, 2] / intrinsics[0, 1, 1])
 
-        pos = self.sphere
-        edge_index = self.edge_index
-        encoded_pos = self.encoder(pos).unsqueeze(0).expand(len(ws), -1, -1)
-
-        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(pos, encoded_pos, edge_index, ws)
+        sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(ws)
         dec_out = {}
         dec_out["sample_coordinates"] = sample_coordinates
         dec_out["scale"] = sample_scale

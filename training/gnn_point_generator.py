@@ -14,6 +14,7 @@ from torch_geometric.nn.models.linkx import SparseLinear
 from torch_geometric.utils import spmm
 from dnnlib import EasyDict
 from training.gaussian import GaussianDecoder
+from training.topology import TopologyFactory
 
 
 def fmm_modulate_linear(
@@ -188,13 +189,14 @@ class LINKX(nn.Module):
         return out
 
 class MeshConv(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.channels = channels
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
         # Weight: [Out, In, 2]   (self, neighbor)
-        self.weight = nn.Parameter(torch.randn(channels, channels, 2))
-        self.bias = nn.Parameter(torch.zeros(channels))
+        self.weight = nn.Parameter(torch.randn(out_channels, in_channels, 2))
+        self.bias = nn.Parameter(torch.zeros(1, 1, out_channels))
 
         self.act = nn.LeakyReLU(inplace=True)
 
@@ -233,8 +235,9 @@ class MeshConv(nn.Module):
         # -------------------------------------------------
         # 3. Bias
         # -------------------------------------------------
-        out = out + self.bias.view(1, -1, 1)
         out = out.permute(0, 2, 1)  # [B, N, C]
+        out = out + self.bias
+        
 
         out = self.act(out)
         return out
@@ -242,17 +245,21 @@ class MeshConv(nn.Module):
 class BlockTest(nn.Module):
     def __init__(self, in_channels, out_channels, w_dim):
         super().__init__()
-        self.conv1 = MeshConv(in_channels)
+        self.conv1 = MeshConv(in_channels, out_channels)
+        if in_channels != out_channels:
+            self.residual = nn.Linear(in_channels, out_channels)
+        else:
+            self.residual = nn.Identity()
         self.conv2 = SynthesisLayer(out_channels, out_channels, w_dim)
         self.conv3 = SynthesisLayer(out_channels, out_channels, w_dim, activation=nn.Identity())
         self.activation = nn.LeakyReLU(inplace=True)
 
     def forward(self, x, edge_index, w):
-        x_ = x
+        skip = self.residual(x)
         x = self.conv1(x, edge_index)
         x = self.conv2(x, w)
         x = self.conv3(x, w)
-        x = x + x_
+        x = x + skip
         x = self.activation(x)
         return x
 
@@ -276,7 +283,7 @@ class PointGNNConv(nn.Module):
 
     def __init__(
         self,
-        channels,
+        in_channels,
         out_channels,
         z_dim,
     ):
@@ -285,16 +292,20 @@ class PointGNNConv(nn.Module):
         self.mlp_h = nn.ModuleList(
             [
                 # SynthesisLayer(channels, channels // 2, z_dim),
-                SynthesisLayer(channels, 3, z_dim, activation=nn.Tanh()),
+                SynthesisLayer(in_channels, 3, z_dim, activation=nn.Tanh()),
             ]
         )
 
         self.mlp_g = nn.ModuleList(
             [
-                SynthesisLayer(channels + 12, channels, z_dim),
-                SynthesisLayer(channels, channels, z_dim, activation=nn.Identity()),
+                SynthesisLayer(in_channels * 2 + 12, out_channels, z_dim),
+                SynthesisLayer(out_channels, out_channels, z_dim, activation=nn.Identity()),
             ]
         )
+        if in_channels != out_channels:
+            self.residual = nn.Linear(in_channels, out_channels)
+        else:
+            self.residual = nn.Identity()
         self.act = nn.LeakyReLU(inplace=True)
         self.norm = PixelNorm()
 
@@ -305,6 +316,7 @@ class PointGNNConv(nn.Module):
         reset(self.mlp_g)
 
     def forward(self, x: Tensor, pos: Tensor, edge_index: Adj, w: Tensor) -> Tensor:
+        skip = self.residual(x)
         delta = x
         for i, layer in enumerate(self.mlp_h):
             delta = layer(delta, w)
@@ -327,14 +339,14 @@ class PointGNNConv(nn.Module):
         
         # --- 4. Fusion ---
         # Now we concat small tensors [N, 3] and [N, C] -> [N, C+3]
-        out = torch.cat([pos_min, pos_max, pos_mean, pos_std, x_aggr], dim=-1)
+        out = torch.cat([pos_min, pos_max, pos_mean, pos_std, x, x_aggr], dim=-1)
 
         out = self.norm(out)
         
         for i, layer in enumerate(self.mlp_g):
             out = layer(out, w)
             
-        out = x + out
+        out = skip + out
         out = self.act(out)
         return out
 
@@ -347,61 +359,132 @@ class PointGNNConv(nn.Module):
         )
 
 
+class MeshUpsample(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, subdiv_map):
+        """
+        x: [B, N_prev, C]
+        subdiv_map: [2, N_new] (Indices of parents for new points)
+        Returns: [B, N_prev + N_new, C]
+        """
+        # 1. Get features of parents
+        # subdiv_map[0] -> Parent A, subdiv_map[1] -> Parent B
+        idx_a = subdiv_map[0]
+        idx_b = subdiv_map[1]
+
+        feat_a = x[:, idx_a, :]
+        feat_b = x[:, idx_b, :]
+
+        # 2. Linear Interpolation (Average)
+        x_new = (feat_a + feat_b) * 0.5
+
+        # 3. Concatenate (Growth)
+        # Order must match the topology generation: [Old, New]
+        out = torch.cat([x, x_new], dim=1)
+
+        return out
+
+
+class GaussianEncoding(torch.nn.Module):
+    """Fourier features like in f.py (cos/sin of random projections)."""
+
+    def __init__(self, sigma: float, input_size: int, encoded_size: int):
+        super().__init__()
+        b = torch.randn((encoded_size, input_size)) * sigma
+        self.register_buffer("b", b)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        vp = 2 * np.pi * x @ self.b.t()
+        return torch.cat((torch.cos(vp), torch.sin(vp)), dim=-1)
+
+
+class SynthesisBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, w_dim):
+        super().__init__()
+        self.geo_conv = PointGNNConv(in_channels, out_channels, w_dim)
+        self.attr_conv = TestBlock(in_channels, out_channels, w_dim)
+
+    def forward(self, x, pos, edge_index, w):
+        pass
+
+
 class CloudGenerator(nn.Module):
-    def __init__(self, channels=128, num_pts=1024, z_dim=128, blocks=2):
+    def __init__(self, channels=256, num_pts=1024, z_dim=128, blocks=2):
         super().__init__()
         self.z_dim = z_dim
         self.blocks = blocks
-
-        self.pos_offset = nn.Parameter(torch.zeros(1, 3))
-        self.pos_scale = nn.Parameter(torch.ones(1, 3))
-
-        self.global_conv = nn.Sequential(
-            nn.Linear(channels, channels),
-            nn.LeakyReLU(inplace=True),
-            nn.Linear(channels, channels),
-            nn.LeakyReLU(inplace=True),
+        self.topology_stack = TopologyFactory.precompute_icosahedron_stack(
+            max_level=5,
+            device='cpu',
+        )
+        self.encoder = GaussianEncoding(
+            sigma=10.0,
+            input_size=3,
+            encoded_size=128,
         )
 
+        self.proj_head = nn.Sequential(
+            nn.Linear(channels, channels * 2),
+        )
+
+        self.geo_blocks = nn.ModuleList(
+            [
+                PointGNNConv(channels, channels, z_dim)
+                for _ in range(3)
+            ]
+        )
+
+        self.attr_blocks = nn.ModuleList(
+            [
+                BlockTest(channels * 2, channels * 2, z_dim)
+                for _ in range(3)
+            ]
+        )
+
+        self.layer_2 = SynthesisLayer(channels, channels // 2, z_dim, noise=False)
         self.tail = nn.Sequential(
             nn.Linear(channels // 2, 3),
             nn.Tanh(),
         )
+        self.upsample = MeshUpsample()
 
-        self.synthetic_block1 = PointGNNConv(128, 128, z_dim)
-        self.synthetic_block2 = PointGNNConv(128, 128, z_dim)
-        self.synthetic_block3 = PointGNNConv(128, 128, z_dim)
-        # self.synthetic_block8 = PointGNNConv(128, 128, z_dim)
-        self.synthetic_block4 = BlockTest(256, 256, z_dim)
-        self.synthetic_block5 = BlockTest(256, 256, z_dim)
-        self.synthetic_block6 = BlockTest(256, 256, z_dim)
-        self.synthetic_block7 = BlockTest(256, 256, z_dim)
+    def forward(self, w):
+        level = 2
+        level_2 = self.topology_stack[level]
+        pos = level_2.verts 
+        edge_index = level_2.dense_edge_index
+        x = self.encoder(pos)  # [N, C]
+        x = x.unsqueeze(0).expand(w.shape[0], -1, -1)  # [B, N, C]
 
-        self.layer_1 = SynthesisLayer(channels * 2, channels, z_dim, noise=False)
-        self.layer_2 = SynthesisLayer(channels, channels // 2, z_dim, noise=False)
+        y = self.proj_head(x)
+        for i in range(3):
+            x = self.geo_blocks[i](x, pos, edge_index, w[:, 0])
+            y = self.attr_blocks[i](y, edge_index, w[:, 0])
+            y = (self.proj_head(x) + y) / np.sqrt(2.0)
+            next_level = level + 1
+            topology_next = self.topology_stack[next_level]
+            x = self.upsample(x, topology_next.subdiv_map)
+            y = self.upsample(y, topology_next.subdiv_map)
+            pos = topology_next.verts
+            edge_index = topology_next.dense_edge_index
+            level = next_level
 
-    def forward(self, pos, x, edge_index, batch, w):
-        x_ = x
-        x = self.synthetic_block1(x, pos, edge_index, w[:, 0])
-        x = self.synthetic_block2(x, pos, edge_index, w[:, 0])
-        x = self.synthetic_block3(x, pos, edge_index, w[:, 0])
-        # x = self.synthetic_block8(x, edge_index, w[:, 0])
-
-        # h, _ = x.max(dim=1)  # [B, C]
-        # h = self.global_conv(h)  # [B, C]
-        # h = h.unsqueeze(1).expand(-1, x.size(1), -1)  # [B, N, C]
-
-        x = torch.cat([x, x_], dim=-1)
-        new_pos = self.layer_1(x, w[:, 0])
-        new_pos = self.layer_2(new_pos, w[:, 0])
+        new_pos = self.layer_2(x, w[:, 0])
         new_pos = self.tail(new_pos)
-        pre_feat = x
-        x = self.synthetic_block4(x, edge_index, w[:, 0])
-        x = self.synthetic_block5(x, edge_index, w[:, 0])
-        x = self.synthetic_block6(x, edge_index, w[:, 0])
-        x = self.synthetic_block7(x, edge_index, w[:, 0])
 
-        return new_pos, pre_feat, x
+        return new_pos, y
+
+    def _apply(self, fn):
+        """
+        Override _apply to handle custom data structures.
+        PyTorch calls this for .to(), .cuda(), .cpu(), .type(), etc.
+        """
+        super()._apply(fn)
+        self.topology_stack.map_tensors(fn)
+        
+        return self
 
 
 class PointGenerator(nn.Module):
@@ -430,7 +513,7 @@ class PointGenerator(nn.Module):
         self.num_ws = 18
         self.z_dim = w_dim
 
-    def forward(self, pos, x, edge_index, ws):
+    def forward(self, ws):
         B = ws.shape[0]
 
         xyz = torch.empty((B, self.num_pts, 3), device=ws.device)
@@ -439,15 +522,11 @@ class PointGenerator(nn.Module):
         opacity = torch.empty((B, self.num_pts, 1), device=ws.device)
         color = torch.empty((B, self.num_pts, 3), device=ws.device)
 
-        point_cloud, pre_feat, gaussians_features = self.point_encoder(
-            pos, x, edge_index, None, ws
-        )
+        point_cloud, y = self.point_encoder(ws)
         # scale_features = self.decoder_scale(
         #     torch.cat([gaussians_features, pre_feat], dim=-1)
         # )
-        color_features = self.decoder_color(
-            torch.cat([gaussians_features, pre_feat], dim=-1)
-        )
+        color_features = self.decoder_color(y)
         gaussian_model = EasyDict(
             xyz=point_cloud,
             # **scale_features,
