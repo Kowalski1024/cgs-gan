@@ -12,6 +12,8 @@ from torch_geometric.nn.inits import reset
 from itertools import pairwise
 from torch_geometric.nn.models.linkx import SparseLinear
 from torch_geometric.utils import spmm
+from torch_utils.ops.neighbor_max import neighbor_max
+from torch_utils.ops.geo_stats import geo_stats
 from dnnlib import EasyDict
 from training.gaussian import GaussianDecoder, trunc_exp
 from training.topology import TopologyFactory
@@ -335,17 +337,12 @@ class PointGNNConv(nn.Module):
         # Gather features: [B, N, 6, C]
         # We immediately Max-Pool. We do NOT concatenate geometry yet.
         # This saves significant VRAM bandwidth.
-        x_neighbors = x[:, edge_index]  # [B, N, 6, C]
-        x_aggr, _ = x_neighbors.max(dim=2)  # [B, N, C]
+        x_aggr, _ = neighbor_max(x, edge_index)
         
         # --- 3. Geometric Aggregation ---
         # Formula: pos_j - (pos_i - delta_i)  ==> (pos_j - pos_i) + delta_i
-        rel_pos = (pos[edge_index] - pos.unsqueeze(1)).unsqueeze(0)  # [1, N, 6, 3]
-        rel_pos = rel_pos + delta.unsqueeze(2)  # [B, N, 6, 3]
-        pos_mean = rel_pos.mean(dim=2)  # [B, N, 3]
-        pos_std = rel_pos.std(dim=2)    # [B, N, 3]
-        pos_min, _ = rel_pos.min(dim=2)  # [B, N, 3]
-        pos_max, _ = rel_pos.max(dim=2)  # [B, N, 3]
+        pos_var, pos_mean, pos_min, pos_max = geo_stats(pos, delta, edge_index)
+        pos_std = torch.sqrt(pos_var + 1e-8)
         
         # --- 4. Fusion ---
         # Now we concat small tensors [N, 3] and [N, C] -> [N, C+3]
@@ -367,6 +364,56 @@ class PointGNNConv(nn.Module):
             f"  mlp_g={self.mlp_g},\n"
             f")"
         )
+
+
+class GNNConv(nn.Module):
+    def __init__(self, in_channels, out_channels, w_dim, geometry_aware=False):
+        super().__init__()
+        self.channel_in = in_channels
+        self.channel_out = out_channels
+        self.w_dim = w_dim
+        self.geometry_aware = geometry_aware
+
+        self.layer_1 = SynthesisLayer(in_channels, out_channels, w_dim)
+        if geometry_aware:
+            self.layer_2 = SynthesisLayer(out_channels * 2 + 12, out_channels, w_dim, activation=nn.Identity())
+            self.layer_geo = SynthesisLayer(in_channels, 3, w_dim, activation=nn.Tanh())
+        else:
+            self.layer_2 = SynthesisLayer(out_channels * 2, out_channels, w_dim, activation=nn.Identity())
+            self.layer_geo = None
+
+        if in_channels != out_channels:
+            self.residual = nn.Linear(in_channels, out_channels)
+        else:
+            self.residual = nn.Identity()
+
+        self.norm = PixelNorm()
+        self.act = nn.LeakyReLU(inplace=True)
+
+
+    def forward(self, x, edge_index, w, pos=None):
+        skip = self.residual(x)
+        out = self.layer_1(x, w)
+
+        # 2. Neighbor aggregation
+        x_aggr, _ = neighbor_max(x, edge_index)
+
+        if self.geometry_aware:
+            delta = self.layer_geo(x, w)
+            # Geometric aggregation
+            pos_var, pos_mean, pos_min, pos_max = geo_stats(pos, delta, edge_index)
+            pos_std = torch.sqrt(pos_var + 1e-8)
+
+            out = torch.cat([pos_min, pos_max, pos_mean, pos_std, out, x_aggr], dim=-1)
+        else:
+            out = torch.cat([out, x_aggr], dim=-1)
+
+        out = self.norm(out)
+        out = self.layer_2(out, w)
+        out = skip + out
+        out = self.act(out)
+        return out
+        
 
 
 class MeshUpsample(nn.Module):
