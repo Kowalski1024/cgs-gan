@@ -17,6 +17,7 @@ from torch_utils.ops.geo_stats import geo_stats
 from dnnlib import EasyDict
 from training.gaussian import GaussianDecoder, trunc_exp
 from training.topology import TopologyFactory
+from torch_utils import persistence
 
 
 SCALE_MAX = 0.02
@@ -65,15 +66,14 @@ def fmm_modulate_linear(
     return out
 
 
+@persistence.persistent_class
 class SynthesisLayer(torch.nn.Module):
     def __init__(
         self,
         in_channels,
         out_channels,
         w_dim,
-        channels_last=False,
         activation=nn.LeakyReLU(inplace=True),
-        noise=False,
         rank=10,
     ):
         super().__init__()
@@ -81,14 +81,8 @@ class SynthesisLayer(torch.nn.Module):
         self.w_dim = w_dim
         self.affine = nn.Linear(self.w_dim, (in_channels + out_channels) * rank)
 
-        memory_format = (
-            torch.channels_last if channels_last else torch.contiguous_format
-        )
-        self.weight = torch.nn.Parameter(
-            torch.randn([out_channels, in_channels]).to(memory_format=memory_format)
-        )
+        self.weight = torch.nn.Parameter(torch.randn([out_channels, in_channels]))
         self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
-        self.noise_strength = torch.nn.Parameter(torch.zeros([]))
         self.activation = activation
 
         self.reset_parameters()
@@ -100,6 +94,8 @@ class SynthesisLayer(torch.nn.Module):
             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
             nn.init.uniform_(self.bias, -bound, bound)
 
+        nn.init.ones_(self.affine.bias)
+        
     def forward(self, x, w):
         styles = self.affine(w)
 
@@ -115,167 +111,7 @@ class SynthesisLayer(torch.nn.Module):
         return x
 
 
-class LINKX(nn.Module):
-    """
-    Optimized LINKX operator for fixed topology (Icosahedron).
-    Replaces sparse adjacency matmul with dense embedding lookups.
-    """
-    def __init__(
-        self,
-        num_nodes: int,
-        in_channels: int,
-        hidden_channels: int,
-        out_channels: int,
-        num_layers: int,
-        w_dim: int,
-        num_edge_layers: int = 1,
-        num_node_layers: int = 1,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        self.num_nodes = num_nodes
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.num_edge_layers = num_edge_layers
-        self.num_layers = num_layers
-
-        self.edge_emb = nn.Embedding(num_nodes, hidden_channels)
-
-        channels = [in_channels] + [hidden_channels] * num_node_layers
-        self.node_mlp = MLP(channels, dropout=0.0, act_first=True, act="leakyrelu")
-
-        self.cat_lin1 = torch.nn.Linear(hidden_channels, hidden_channels)
-        self.cat_lin2 = torch.nn.Linear(hidden_channels, hidden_channels)
-
-        channels = [hidden_channels] * num_layers + [out_channels]
-        self.final_mlp = nn.ModuleList()
-        for channel_in, channel_out in pairwise(channels):
-            self.final_mlp.append(SynthesisLayer(channel_in, channel_out, w_dim))
-
-        self.leakyrelu = nn.LeakyReLU(inplace=True)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        r"""Resets all learnable parameters of the module."""
-        self.node_mlp.reset_parameters()
-        self.cat_lin1.reset_parameters()
-        self.cat_lin2.reset_parameters()
-
-    def forward(
-        self,
-        x,   # [N, in_C]
-        edge_index, # [N, 6]
-        w,             # [L, B, W_dim] or list
-    ):
-        """
-        dense_edge_index: Must handle padding for degree-5 nodes (e.g. repeat last neighbor).
-        """
-        B = w.shape[0]
-        # --- Branch A: Structure (Edge) ---
-        # 1. Retrieve neighbor weights: [N, 6] -> [N, 6, H]
-        nb_weights = self.edge_emb(edge_index)
-        
-        # 2. Aggregation (Sum): [N, 6, H] -> [N, H]
-        # This computes A * W effectively
-        out = nb_weights.sum(dim=1)
-            
-        # 4. First Mixing
-        out = out + self.cat_lin1(out)  # [N, H]
-        
-        # Expand to batch dimension
-        out = out.unsqueeze(0).expand(B, -1, -1)  # [B, N, H]
-
-        # --- Branch B: Node Features ---
-        if x is not None:
-            x = self.node_mlp(x)
-            out = out + x
-            out = out + self.cat_lin2(x)
-
-        out = self.leakyrelu(out)
-        
-        for i, layer in enumerate(self.final_mlp):
-            # w[i] shape: [B, W_dim]
-            out = layer(out, w)
-            
-        return out
-
-class MeshConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-        # Weight: [Out, In, 2]   (self, neighbor)
-        self.weight = nn.Parameter(torch.randn(out_channels, in_channels, 2))
-        self.bias = nn.Parameter(torch.zeros(1, 1, out_channels))
-
-        self.act = nn.LeakyReLU(inplace=True)
-
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-        if self.bias is not None:
-            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
-            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-            nn.init.uniform_(self.bias, -bound, bound)
-
-    def forward(self, x, edge_index):
-        x = x.permute(0, 2, 1)  # [B, C, N]
-        B, C, N = x.shape
-
-        # -------------------------------------------------
-        # 1. Neighbor aggregation
-        # -------------------------------------------------
-        feat_self = x
-
-        x_perm = x.permute(0, 2, 1)  # [B, N, C]
-        x_neigh = x_perm[:, edge_index]  # [B, N, K, C]
-        x_neigh, _ = x_neigh.max(dim=2)          # [B, N, C]
-        feat_neigh = x_neigh.permute(0, 2, 1)  # [B, C, N]
-
-        # -------------------------------------------------
-        # 2. Convolution (shared weights)
-        # -------------------------------------------------
-        w_self = self.weight[:, :, 0].unsqueeze(0).expand(B, -1, -1)
-        out = torch.bmm(w_self, feat_self)
-
-        w_neigh = self.weight[:, :, 1].unsqueeze(0).expand(B, -1, -1)
-        out = out + torch.bmm(w_neigh, feat_neigh)
-
-        # -------------------------------------------------
-        # 3. Bias
-        # -------------------------------------------------
-        out = out.permute(0, 2, 1)  # [B, N, C]
-        out = out + self.bias
-        
-
-        out = self.act(out)
-        return out
-        
-class BlockTest(nn.Module):
-    def __init__(self, in_channels, out_channels, w_dim):
-        super().__init__()
-        self.conv1 = MeshConv(in_channels, out_channels)
-        if in_channels != out_channels:
-            self.residual = nn.Linear(in_channels, out_channels)
-        else:
-            self.residual = nn.Identity()
-        self.conv2 = SynthesisLayer(out_channels, out_channels, w_dim)
-        self.conv3 = SynthesisLayer(out_channels, out_channels, w_dim, activation=nn.Identity())
-        self.activation = nn.LeakyReLU(inplace=True)
-
-    def forward(self, x, edge_index, w):
-        skip = self.residual(x)
-        x = self.conv1(x, edge_index)
-        x = self.conv2(x, w)
-        x = self.conv3(x, w)
-        x = x + skip
-        x = self.activation(x)
-        return x
-
-
+@persistence.persistent_class
 class PixelNorm(nn.Module):
     def __init__(self, epsilon=1e-8):
         super().__init__()
@@ -287,85 +123,7 @@ class PixelNorm(nn.Module):
         return x * torch.rsqrt(torch.mean(x ** 2, dim=2, keepdim=True) + self.epsilon)
 
 
-class PointGNNConv(nn.Module):
-    r"""The PointGNN operator from the `"Point-GNN: Graph Neural Network for
-    3D Object Detection in a Point Cloud" <https://arxiv.org/abs/2003.01251>`_
-    paper.
-    """
-
-    def __init__(
-        self,
-        in_channels,
-        out_channels,
-        z_dim,
-    ):
-        super().__init__()
-
-        self.mlp_h = nn.ModuleList(
-            [
-                # SynthesisLayer(channels, channels // 2, z_dim),
-                SynthesisLayer(in_channels, 3, z_dim, activation=nn.Tanh()),
-            ]
-        )
-
-        self.mlp_g = nn.ModuleList(
-            [
-                SynthesisLayer(in_channels * 2 + 12, out_channels, z_dim),
-                SynthesisLayer(out_channels, out_channels, z_dim, activation=nn.Identity()),
-            ]
-        )
-        if in_channels != out_channels:
-            self.residual = nn.Linear(in_channels, out_channels)
-        else:
-            self.residual = nn.Identity()
-        self.act = nn.LeakyReLU(inplace=True)
-        self.norm = PixelNorm()
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        reset(self.mlp_h)
-        reset(self.mlp_g)
-
-    def forward(self, x: Tensor, pos: Tensor, edge_index: Adj, w: Tensor) -> Tensor:
-        skip = self.residual(x)
-        delta = x
-        for i, layer in enumerate(self.mlp_h):
-            delta = layer(delta, w)
-            
-        # --- 2. Feature Aggregation (Memory Optimized) ---
-        # Gather features: [B, N, 6, C]
-        # We immediately Max-Pool. We do NOT concatenate geometry yet.
-        # This saves significant VRAM bandwidth.
-        x_aggr, _ = neighbor_max(x, edge_index)
-        
-        # --- 3. Geometric Aggregation ---
-        # Formula: pos_j - (pos_i - delta_i)  ==> (pos_j - pos_i) + delta_i
-        pos_var, pos_mean, pos_min, pos_max = geo_stats(pos, delta, edge_index)
-        pos_std = torch.sqrt(pos_var + 1e-8)
-        
-        # --- 4. Fusion ---
-        # Now we concat small tensors [N, 3] and [N, C] -> [N, C+3]
-        out = torch.cat([pos_min, pos_max, pos_mean, pos_std, x, x_aggr], dim=-1)
-
-        out = self.norm(out)
-        
-        for i, layer in enumerate(self.mlp_g):
-            out = layer(out, w)
-            
-        out = skip + out
-        out = self.act(out)
-        return out
-
-    def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}(\n"
-            f"  mlp_h={self.mlp_h},\n"
-            f"  mlp_g={self.mlp_g},\n"
-            f")"
-        )
-
-
+@persistence.persistent_class
 class GNNConv(nn.Module):
     def __init__(self, in_channels, out_channels, w_dim, geometry_aware=False):
         super().__init__()
@@ -375,11 +133,12 @@ class GNNConv(nn.Module):
         self.geometry_aware = geometry_aware
 
         self.layer_1 = SynthesisLayer(in_channels, out_channels, w_dim)
+        self.layer_3 = SynthesisLayer(out_channels, out_channels, w_dim, activation=nn.Identity())
         if geometry_aware:
-            self.layer_2 = SynthesisLayer(out_channels * 2 + 12, out_channels, w_dim, activation=nn.Identity())
+            self.layer_2 = SynthesisLayer(out_channels * 2 + 12, out_channels, w_dim)
             self.layer_geo = SynthesisLayer(in_channels, 3, w_dim, activation=nn.Tanh())
         else:
-            self.layer_2 = SynthesisLayer(out_channels * 2, out_channels, w_dim, activation=nn.Identity())
+            self.layer_2 = SynthesisLayer(out_channels * 2, out_channels, w_dim)
             self.layer_geo = None
 
         if in_channels != out_channels:
@@ -395,27 +154,33 @@ class GNNConv(nn.Module):
         skip = self.residual(x)
         out = self.layer_1(x, w)
 
-        # 2. Neighbor aggregation
-        x_aggr, _ = neighbor_max(x, edge_index)
+        # Feature aggregation
+        out_aggr, _ = neighbor_max(out, edge_index)
 
         if self.geometry_aware:
+            assert pos is not None, "Position tensor 'pos' must be provided for geometry-aware GNNConv."
             delta = self.layer_geo(x, w)
+
             # Geometric aggregation
             pos_var, pos_mean, pos_min, pos_max = geo_stats(pos, delta, edge_index)
             pos_std = torch.sqrt(pos_var + 1e-8)
 
-            out = torch.cat([pos_min, pos_max, pos_mean, pos_std, out, x_aggr], dim=-1)
+            # Fusion
+            out = torch.cat([pos_min, pos_max, pos_mean, pos_std, out, out_aggr], dim=-1)
         else:
-            out = torch.cat([out, x_aggr], dim=-1)
+            # Fusion
+            out = torch.cat([out, out_aggr], dim=-1)
 
+        # Normalization, final layer, skip connection, and activation
         out = self.norm(out)
         out = self.layer_2(out, w)
+        out = self.layer_3(out, w)
         out = skip + out
         out = self.act(out)
         return out
         
 
-
+@persistence.persistent_class
 class MeshUpsample(nn.Module):
     def __init__(self):
         super().__init__()
@@ -444,6 +209,7 @@ class MeshUpsample(nn.Module):
         return out
 
 
+@persistence.persistent_class
 class GaussianEncoding(torch.nn.Module):
     """Fourier features like in f.py (cos/sin of random projections)."""
 
@@ -457,22 +223,24 @@ class GaussianEncoding(torch.nn.Module):
         return torch.cat((torch.cos(vp), torch.sin(vp)), dim=-1)
 
 
+@persistence.persistent_class
 class SynthesisBlock(nn.Module):
     def __init__(self, in_channels, out_channels, w_dim):
         super().__init__()
-        self.geo_conv = PointGNNConv(in_channels, out_channels, w_dim)
-        self.attr_conv = BlockTest(in_channels * 2, out_channels * 2, w_dim)
+        self.geo_conv = GNNConv(in_channels, out_channels, w_dim, geometry_aware=False)
+        self.attr_conv = GNNConv(in_channels * 2, out_channels * 2, w_dim)
         self.proj_head = nn.Sequential(
             nn.Linear(out_channels, out_channels * 2),
         )
 
     def forward(self, x, y, w, topology):
-        x = self.geo_conv(x, topology.verts, topology.dense_edge_index, w)
+        x = self.geo_conv(x, topology.dense_edge_index, w, pos=topology.verts)
         y = self.attr_conv(y, topology.dense_edge_index, w)
         y = (self.proj_head(x) + y) / np.sqrt(2.0)
         return x, y
 
 
+@persistence.persistent_class
 class Decoder(nn.Module):
     def __init__(self, channel_in, features, w_dim, is_base=False):
         super().__init__()
@@ -488,6 +256,7 @@ class Decoder(nn.Module):
 
         bias = self.layer.bias
         weight = self.layer.weight
+        
         if is_base:
             val_sum = 0
             scale_log_init = float(np.log(SCALE_INIT).round(2))
@@ -517,12 +286,13 @@ class Decoder(nn.Module):
         return self.layer(x)
 
 
+@persistence.persistent_class
 class CloudGenerator(nn.Module):
     def __init__(self, channels=256, num_pts=1024, z_dim=128, blocks=2):
         super().__init__()
         self.z_dim = z_dim
         self.blocks = blocks
-        self.max_level = 6
+        self.max_level = 7
         self.topology_stack = TopologyFactory.precompute_icosahedron_stack(
             max_level=self.max_level,
             device='cpu',
@@ -531,7 +301,7 @@ class CloudGenerator(nn.Module):
         self._scale_log_min = float(np.log(SCALE_MIN).round(2))
         self._scale_log_max = float(np.log(SCALE_MAX).round(2))
 
-        self.channels = {1: 256, 2: 256, 3: 128, 4: 64, 5: 32, 6: 32}
+        self.channels = {1: 256, 2: 256, 3: 128, 4: 64, 5: 32, 6: 32, 7: 16}
         self.blocks = nn.ModuleList()
         self.xyz_decoders = nn.ModuleList()
         self.attr_decoders = nn.ModuleList()
@@ -627,6 +397,7 @@ class CloudGenerator(nn.Module):
         return self
 
 
+@persistence.persistent_class
 class PointGenerator(nn.Module):
     def __init__(
         self,
