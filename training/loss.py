@@ -114,11 +114,15 @@ class StyleGAN2Loss(Loss):
 
                 gaussians = gen_result["gaussian_params"]
                 position_loss_list = []
+                transparency_loss_list = []
                 for gauss in gaussians:
                     position_loss_list.append(gauss["_xyz"].pow(2).mean())
+                    transparency_loss_list.append(torch.relu(0.1 - gauss["_opacity"]).pow(2).mean())
                 position_loss = torch.stack(position_loss_list).mean()
+                transparency_loss = torch.stack(transparency_loss_list).mean()
 
-                logger.add("Position_Loss", "position_loss", position_loss)
+                logger.add("G_reg", "position_loss", position_loss)
+                logger.add("G_reg", "transparency_loss", transparency_loss)
                 logger.add("Loss", "D_loss", gen_logits)
                 logger.add("Loss_Sign", "signs_fake", gen_logits.sign())
                 logger.add("Loss", "G_loss", loss_Gmain)
@@ -137,6 +141,18 @@ class StyleGAN2Loss(Loss):
                 logger.add_tensor_stats("3dgs", "_scaling", gen_result["gaussian_params"][0]["_scaling"])
                 logger.add_tensor_stats("3dgs", "_rotation", gen_result["gaussian_params"][0]["_rotation"])
                 logger.add_tensor_stats("3dgs", "_opacity", gen_result["gaussian_params"][0]["_opacity"])
+
+
+                N = gen_result["gaussian_params"][0]["_xyz"].shape[0]
+                # number of transparent gaussians [B, N, 1]
+                num_transparent = (gen_result["gaussian_params"][0]["_opacity"] < 0.1).sum().float()
+                logger.add("3dgs", "transparent_gaussians", num_transparent / N)
+
+                # number of max size axis of scale 0.02 [B, N, 3]
+                num_large_gaussians = (gen_result["gaussian_params"][0]["_scaling"].max(dim=1)[0] == 0.02).sum().float()
+                logger.add("3dgs", "max_scale_gaussians", num_large_gaussians / N)
+                num_small_gaussians = (gen_result["gaussian_params"][0]["_scaling"].min(dim=1)[0] == 1e-6).sum().float() 
+                logger.add("3dgs", "min_scale_gaussians", num_small_gaussians / N)
 
                 gen_logits = self.run_D(gen_result, gen_c, blur_sigma=blur_sigma, update_emas=True)
                 loss_Dgen = torch.nn.functional.softplus(gen_logits)

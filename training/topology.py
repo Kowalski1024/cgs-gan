@@ -149,9 +149,6 @@ class TopologyFactory:
         device: torch.device | str = "cpu",
     ) -> TopologyStack:
         device = torch.device(device)
-        print(
-            f"Precomputing Topology Stack (L{start_level}-{max_level}) on {device}..."
-        )
 
         # Start at Level 0
         mesh = trimesh.creation.icosahedron()

@@ -17,7 +17,6 @@ from torch_utils.ops.geo_stats import geo_stats
 from dnnlib import EasyDict
 from training.gaussian import GaussianDecoder, trunc_exp
 from training.topology import TopologyFactory
-from torch_utils import persistence
 
 
 SCALE_MAX = 0.02
@@ -66,7 +65,6 @@ def fmm_modulate_linear(
     return out
 
 
-@persistence.persistent_class
 class SynthesisLayer(torch.nn.Module):
     def __init__(
         self,
@@ -111,7 +109,6 @@ class SynthesisLayer(torch.nn.Module):
         return x
 
 
-@persistence.persistent_class
 class PixelNorm(nn.Module):
     def __init__(self, epsilon=1e-8):
         super().__init__()
@@ -123,7 +120,6 @@ class PixelNorm(nn.Module):
         return x * torch.rsqrt(torch.mean(x ** 2, dim=2, keepdim=True) + self.epsilon)
 
 
-@persistence.persistent_class
 class GNNConv(nn.Module):
     def __init__(self, in_channels, out_channels, w_dim, geometry_aware=False):
         super().__init__()
@@ -180,7 +176,7 @@ class GNNConv(nn.Module):
         return out
         
 
-@persistence.persistent_class
+
 class MeshUpsample(nn.Module):
     def __init__(self):
         super().__init__()
@@ -209,7 +205,6 @@ class MeshUpsample(nn.Module):
         return out
 
 
-@persistence.persistent_class
 class GaussianEncoding(torch.nn.Module):
     """Fourier features like in f.py (cos/sin of random projections)."""
 
@@ -223,7 +218,6 @@ class GaussianEncoding(torch.nn.Module):
         return torch.cat((torch.cos(vp), torch.sin(vp)), dim=-1)
 
 
-@persistence.persistent_class
 class SynthesisBlock(nn.Module):
     def __init__(self, in_channels, out_channels, w_dim):
         super().__init__()
@@ -240,7 +234,6 @@ class SynthesisBlock(nn.Module):
         return x, y
 
 
-@persistence.persistent_class
 class Decoder(nn.Module):
     def __init__(self, channel_in, features, w_dim, is_base=False):
         super().__init__()
@@ -286,7 +279,6 @@ class Decoder(nn.Module):
         return self.layer(x)
 
 
-@persistence.persistent_class
 class CloudGenerator(nn.Module):
     def __init__(self, channels=256, num_pts=1024, z_dim=128, blocks=2):
         super().__init__()
@@ -397,7 +389,6 @@ class CloudGenerator(nn.Module):
         return self
 
 
-@persistence.persistent_class
 class PointGenerator(nn.Module):
     def __init__(
         self,
