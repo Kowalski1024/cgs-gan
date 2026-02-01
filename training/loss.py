@@ -46,6 +46,7 @@ class StyleGAN2Loss(Loss):
 
         self.coeffs = loss_custom_options
         self.renderer_gaussian3d = Renderer(sh_degree=0)
+        self.zfar = loss_custom_options.get("zfar", 100.0)
 
     def run_G(self, z, c, resolution, update_emas=False, render_output=True):
         c_gen_conditioning = torch.zeros_like(c)
@@ -77,7 +78,7 @@ class StyleGAN2Loss(Loss):
         # Gmain: Maximize logits for generated images.
         if phase in ['Gmain', 'Gboth']:
             with torch.autograd.profiler.record_function('Gmain_forward'):
-                if self.coeffs["use_multivew_reg"]:
+                if self.coeffs["use_multview_reg"]:
                     # multi view regularization
                     gen_result, _gen_ws = self.run_G(gen_z, gen_c, resolution=self.resolution, render_output=False)
                     num_opt_steps = self.coeffs["num_multiview"]
@@ -95,7 +96,7 @@ class StyleGAN2Loss(Loss):
                         fovy = 2 * torch.atan(intrinsics[0, 1, 2] / intrinsics[0, 1, 1])
 
                         for batch_idx, current_scene in enumerate(gen_result["gaussian_params"]):
-                            render_cam = CustomCam(self.resolution, self.resolution, fovy=fovx, fovx=fovy, extr=extrinsic[batch_idx])
+                            render_cam = CustomCam(self.resolution, self.resolution, fovy=fovx, fovx=fovy, extr=extrinsic[batch_idx], zfar=self.zfar)
                             bg = torch.ones(3, device=gen_z.device)
                             ret_dict = self.renderer_gaussian3d.render(gaussian_params=current_scene, viewpoint_camera=render_cam, bg=bg)
                             batch_renderings.append(ret_dict["image"])
@@ -193,35 +194,3 @@ class StyleGAN2Loss(Loss):
             with torch.autograd.profiler.record_function(name + '_backward'):
                 (loss_Dreal + loss_Dr1).mean().mul(gain).backward()
                 # clip_grad_norm_(self.D.parameters(), max_norm=5)
-              
-
-def knn_distance(pos, k):
-    x = pos.permute(0, 2, 1)
-    B, dims, N = x.shape
-
-    xt = x.permute(0, 2, 1)
-    xi = -2 * torch.bmm(xt, x)
-    xs = torch.sum(xt**2, dim=2, keepdim=True)
-    xst = xs.permute(0, 2, 1)
-    dist = xi + xs + xst # [B, N, N]
-
-    # get k NN id
-    _, idx_o = torch.sort(dist, dim=2)
-    idx = idx_o[: ,: ,1:k+1] # [B, N, k]
-    idx = idx.contiguous().view(B, N*k)
-
-    # gather
-    neighbors = []
-    for b in range(B):
-        tmp = torch.index_select(x[b], 1, idx[b]) # [d, N*k] <- [d, N], 0, [N*k]
-        tmp = tmp.view(dims, N, k)
-        neighbors.append(tmp)
-
-    neighbors = torch.stack(neighbors) # [B, d, N, k]
-
-    # centralize
-    central = x.unsqueeze(3) # [B, d, N, 1]
-    central = central.repeat(1, 1, 1, k) # [B, d, N, k]
-
-    return (central - neighbors).square().mean(dim=[1, 3])
-

@@ -42,6 +42,7 @@ class CGSGenerator(torch.nn.Module):
         self.resolution = img_resolution
         self.rendering_kwargs = rendering_kwargs
         self.custom_options = rendering_kwargs['custom_options']
+        self.zfar = rendering_kwargs.get('zfar', 100.0)
 
         self.point_gen = PointGenerator(w_dim=w_dim, options=self.custom_options)
         self.renderer_gaussian3d = Renderer(sh_degree=0)
@@ -83,7 +84,7 @@ class CGSGenerator(torch.nn.Module):
             gaussian_params.append(gaussian_params_i)
 
             if render_output:
-                cur_cam = CustomCam(resolution, resolution, fovy=fovx, fovx=fovy, extr=cam2world_matrix[batch_idx])
+                cur_cam = CustomCam(resolution, resolution, fovy=fovx, fovx=fovy, extr=cam2world_matrix[batch_idx], zfar=self.zfar)
                 bg = torch.ones(3, device=ws.device)
                 ret_dict = self.renderer_gaussian3d.render(gaussian_params_i, cur_cam, bg=bg)
                 rendered_images.append(ret_dict["image"].unsqueeze(0))

@@ -19,6 +19,7 @@ and
 "GSGAN"
 """
 import click
+import os
 import dnnlib
 from metrics import metric_main
 import numpy as np
@@ -28,6 +29,8 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.command()
 # Required.
 @click.option("--data",             help="Training data",                           type=str,   required=True)
+# Optional dataset selection.
+@click.option("--dataset_type",    help="Dataset class (e.g., CarsDataset, ImageFolderDataset)", type=str, default="CarsDataset")
 # Optional features.
 @click.option("--cam_sample_mode",  help="found in custom dist",                    type=str,   default="smile_pose_rebalancing")
 @click.option("--outdir",           help="Where to save the results",               type=str,   default="./training-results")
@@ -64,11 +67,14 @@ from train_helper import init_dataset_kwargs, launch_training, parse_comma_separ
 @click.option("--center_dists",     help="coeff of center dist.",                   type=float, default=1.0)
 @click.option("--knn_dists",        help="loss scale for knn dists.",               type=float, default=20.0)
 @click.option("--knn_num_ks",       help="number of cluster center.",               type=int,   default=64)
-@click.option("--use_multivew_reg", help="compute grad for multiple views",         type=bool,  default=True)
+@click.option("--use_multview_reg", help="compute grad for multiple views",         type=bool,  default=True)
 @click.option("--num_multiview",    help="number of renderings per training step",  type=int,   default=4)
+@click.option("--init_pos_scale",   help="scale for base sphere positions",         type=float, default=0.25)
 # Optional job description
 @click.option("--desc",             help="String to include in result dir name",    type=str,   default="cgs_gan")
 @click.option("--job_id",           help="slurm job id",                            type=str,   default="")
+# Wandb.
+@click.option("--wandb_group",      help="Weights & Biases group name",             type=str,   default="")
 # Resume Training
 @click.option("--resume",           help="Resume from given network pickle",        type=str)
 @click.option("--resume_kimg",      help="Resume k images",                         type=int)
@@ -102,7 +108,10 @@ def main(**kwargs):
 
     # Training Data
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, prefetch_factor=2)
-    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name="training.dataset.CarsDataset", data=opts.data, cam_sample_mode=opts.cam_sample_mode)
+    dataset_class = opts.dataset_type
+    if "." not in dataset_class:
+        dataset_class = f"training.dataset.{dataset_class}"
+    c.training_set_kwargs, dataset_name = init_dataset_kwargs(class_name=dataset_class, data=opts.data, cam_sample_mode=opts.cam_sample_mode)
     if opts.cond and not c.training_set_kwargs.use_labels:
         raise click.ClickException("--cond=True requires labels specified in dataset.json")
     c.training_set_kwargs.use_labels = opts.cond
@@ -137,8 +146,17 @@ def main(**kwargs):
     n_transformer_mapping = {256: 5, 512: 6, 1024: 7, 2048: 8}
 
     # Configuration about the model architecture
+    dataset_type_name = opts.dataset_type.split(".")[-1]
+    if dataset_type_name == "ImageFolderDataset":
+        zfar = 10.0
+    elif dataset_type_name == "CarsDataset":
+        zfar = 100.0
+    else:
+        zfar = 100.0
+
     c.G_kwargs.rendering_kwargs = {
         "image_resolution": c.training_set_kwargs.resolution,
+        "zfar": zfar,
         "custom_options":{
             "scale_init": -5,
             "scale_threshold": np.log((1 / np.sqrt(opts.gaussian_num_pts)) * 0.5),
@@ -147,6 +165,7 @@ def main(**kwargs):
             "res_end": c.training_set_kwargs.resolution // 4,
             "num_pts": opts.gaussian_num_pts,                   # Number of initial gaussians
             "use_start_pe": opts.start_pe,                      # Use positional encoding on learnable constant
+            "init_pos_scale": opts.init_pos_scale,               # Scale for base sphere positions
             "gnn_num_blocks": 3,
             "bias_num_blocks": 3,
         }
@@ -162,8 +181,9 @@ def main(**kwargs):
         "position_reg": 0.01,
         "transparency_reg": 0.0,
         "is_resume": True if opts.resume is not None else False,
-        "use_multivew_reg": opts.use_multivew_reg,
-        "num_multiview": opts.num_multiview
+        "use_multview_reg": opts.use_multview_reg,
+        "num_multiview": opts.num_multiview,
+        "zfar": zfar,
     }
     c.loss_kwargs.blur_init_sigma = 10 # Blur the images seen by the discriminator.
     c.loss_kwargs.blur_fade_kimg = c.batch_size * opts.blur_fade_kimg / 32 # Fade out the blur during the first N kimg.
@@ -183,8 +203,17 @@ def main(**kwargs):
     if opts.nobench:
         c.cudnn_benchmark = False
 
+    # Wandb.
+    dataset_basename = os.path.splitext(os.path.basename(opts.data))[0]
+    c.wandb_kwargs = dnnlib.EasyDict(
+        group=opts.wandb_group if opts.wandb_group != "" else None,
+        dataset_name=dataset_basename,
+        job_id=opts.job_id if opts.job_id != "" else None,
+    )
+
     # Description string.
     desc = opts.desc
+    desc += f"_{dataset_basename}"
     desc += f"_gpus-{c.num_gpus:d}"
     if opts.job_id != "":
         desc += f"_jobid-{opts.job_id}"

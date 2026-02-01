@@ -44,6 +44,7 @@ def training_loop(
         cudnn_benchmark=True,       # Enable torch.backends.cudnn.benchmark?
         abort_fn=None,              # Callback function for determining whether to abort training. Must return consistent results across ranks.
         progress_fn=None,           # Callback function for updating training progress. Called for all ranks.
+        wandb_kwargs=None,          # Optional W&B config dict.
 ):
     # Initialize.
     start_time = time.time()
@@ -79,7 +80,7 @@ def training_loop(
         print('Constructing networks...')
     common_kwargs = dict(c_dim=training_set.label_dim, img_resolution=training_set.resolution, img_channels=training_set.num_channels)
     G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(device)
-    G.register_buffer('dataset_label_std', torch.tensor(training_set.get_label_std()).to(device))
+    # G.register_buffer('dataset_label_std', torch.tensor(training_set.get_label_std()).to(device))
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(device)
     G_ema = copy.deepcopy(G).eval()
 
@@ -229,6 +230,7 @@ def training_loop(
     wandb_logger = None
     if rank == 0:
         print('Initializing logs...', rank)
+        wandb_kwargs = wandb_kwargs or {}
         config = dict(
             training_set_kwargs=training_set_kwargs,
             data_loader_kwargs=data_loader_kwargs,
@@ -236,10 +238,12 @@ def training_loop(
             D_kwargs=D_kwargs,
             G_opt_kwargs=G_opt_kwargs,
             D_opt_kwargs=D_opt_kwargs,
-            loss_kwargs=loss_kwargs
+            loss_kwargs=loss_kwargs,
+            dataset_name=wandb_kwargs.get("dataset_name"),
+            job_id=wandb_kwargs.get("job_id"),
         )
         name = run_dir.split("/")[-1]
-        wandb_logger = wandb.init(project="CGS GAN", dir=run_dir, name=name, config=config)
+        wandb_logger = wandb.init(project="I-GSGAN", dir=run_dir, name=name, group=wandb_kwargs.get("group"), config=config)
 
     # Train.
     if rank == 0:
