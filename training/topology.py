@@ -131,6 +131,7 @@ class TopologyFactory:
 
         # Calculate new positions (Spherical projection)
         old_pos = verts
+        old_pos = old_pos / np.linalg.norm(old_pos, axis=1, keepdims=True)
         parents_a = verts[edges_unique[:, 0]]
         parents_b = verts[edges_unique[:, 1]]
         new_pos = (parents_a + parents_b) / 2.0

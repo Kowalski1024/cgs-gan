@@ -148,7 +148,7 @@ def main(**kwargs):
     # Configuration about the model architecture
     dataset_type_name = opts.dataset_type.split(".")[-1]
     if dataset_type_name == "ImageFolderDataset":
-        zfar = 10.0
+        zfar = 100.0
     elif dataset_type_name == "CarsDataset":
         zfar = 100.0
     else:
@@ -178,7 +178,7 @@ def main(**kwargs):
         "knn_dists": opts.knn_dists,                    # coeff. of KNN distance
         "knn_num_ks": opts.knn_num_ks,                  # the number of KNN for calculating loss
         "center_dists": opts.center_dists,              # coeff. of center distance
-        "position_reg": 0.01,
+        "position_reg": 0.0,
         "transparency_reg": 0.0,
         "is_resume": True if opts.resume is not None else False,
         "use_multview_reg": opts.use_multview_reg,

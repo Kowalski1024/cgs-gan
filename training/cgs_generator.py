@@ -11,7 +11,7 @@ import torch
 
 from camera_utils import focal2fov
 from torch_utils import persistence
-from training.gaussian3d_splatting.custom_cam import CustomCam
+from training.gaussian3d_splatting.custom_cam import CustomCam, extract_cameras, Camera
 from training.networks_stylegan2 import MappingNetwork
 from training.gaussian3d_splatting.renderer import Renderer
 
@@ -46,7 +46,7 @@ class CGSGenerator(torch.nn.Module):
 
         self.point_gen = PointGenerator(w_dim=w_dim, options=self.custom_options)
         self.renderer_gaussian3d = Renderer(sh_degree=0)
-        self.mapping_network = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.point_gen.num_ws + 1, **mapping_kwargs)
+        self.mapping_network = MappingNetwork(z_dim=z_dim, c_dim=0, w_dim=w_dim, num_ws=self.point_gen.num_ws + 1, **mapping_kwargs)
 
     def mapping(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
         return self.mapping_network(z, torch.zeros_like(c), truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
@@ -60,8 +60,7 @@ class CGSGenerator(torch.nn.Module):
         else:
             self.resolution = resolution
 
-        fovx = 2 * torch.atan(intrinsics[0, 0, 2] / intrinsics[0, 0, 0])
-        fovy = 2 * torch.atan(intrinsics[0, 1, 2] / intrinsics[0, 1, 1])
+        cameras = extract_cameras(cam2world_matrix, intrinsics, image_size=resolution)
 
         sample_coordinates, sample_scale, sample_rotation, sample_color, sample_opacity = self.point_gen(ws)
         dec_out = {}
@@ -84,9 +83,8 @@ class CGSGenerator(torch.nn.Module):
             gaussian_params.append(gaussian_params_i)
 
             if render_output:
-                cur_cam = CustomCam(resolution, resolution, fovy=fovx, fovx=fovy, extr=cam2world_matrix[batch_idx], zfar=self.zfar)
                 bg = torch.ones(3, device=ws.device)
-                ret_dict = self.renderer_gaussian3d.render(gaussian_params_i, cur_cam, bg=bg)
+                ret_dict = self.renderer_gaussian3d.render(gaussian_params_i, cameras[batch_idx], bg=bg)
                 rendered_images.append(ret_dict["image"].unsqueeze(0))
 
         return_dict = {'gaussian_params': gaussian_params}
